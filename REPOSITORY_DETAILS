@@ -1,0 +1,17 @@
+Description:  
+
+Automated OKD cluster deployment on Proxmox instance provisioned with OpenTofu (Open Source fork of Terraform).
+
+Tags/Labels:  
+
+okd; proxmox; automation; opentofu; terraform; 
+
+Mirrors list:  
+
+- https://github.com/HJHPio/OKD-Proxmox-IaC
+  
+- https://gitlab.com/HJHPio/OKD-Proxmox-IaC
+  
+Parent project: [OwnLab](https://github.com/orgs/HJHPio/projects/2)  
+
+![OwnLabLogo](./IMGs/OwnLab/OwnLab-Logo-1_V2024.11.28.png)

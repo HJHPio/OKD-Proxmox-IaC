@@ -1,0 +1,167 @@
+variant: fcos
+version: 1.5.0
+
+ignition:
+  config:
+    merge:
+      - source: ${merge_ignition_source}
+
+passwd:
+  users:
+    - name: ${ssh_admin_username}
+      password_hash: ${ssh_admin_pass_hash}
+      groups: ["wheel", "sudo", "systemd-journal"]
+      ssh_authorized_keys:
+        - ${ssh_admin_public_key}
+
+storage:
+  files:
+    - path: /etc/hostname
+      mode: 0644
+      contents:
+        inline: ${hostname}
+    - path: /etc/NetworkManager/system-connections/${network_iname}.nmconnection
+      mode: 0600
+      contents:
+        inline: |
+          [connection]
+          id=${network_iname}
+          type=ethernet
+          interface-name=${network_iname}
+          [ipv4]
+          method=manual
+          address1=${network_address}
+          gateway=${network_gateway}
+          dns=${join(",", network_dns)}
+          dns-search=
+          [ipv6]
+          method=ignore
+    - path: /etc/systemd/resolved.conf.d/dnsmasq.conf
+      mode: 0644
+      contents:
+        inline: |
+          [Resolve]
+          DNS=${join(" ", network_dns)}
+          FallbackDNS=1.1.1.1 8.8.8.8 1.0.0.1
+          DNSStubListener=no     
+    - path: /usr/local/bin/check_bootstrap_status.sh
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          set -e
+
+          # Check if hostname contains 'bootstrap'
+          if hostname | grep -q "bootstrap"; then
+            echo "Hostname contains 'bootstrap'. Checking FCOS version..."
+
+            # Check if rpm-ostree is in the middle of a rebase or upgrade
+            if rpm-ostree status | grep -q "State: idle"; then
+                echo "System is idle. Proceeding with version checks..."
+
+                # Check if the specific hash is in the deployments
+                inactive_version="${inactive_version}"
+                inactive_digest="${inactive_digest}"
+
+                # Get the currently active version and digest
+                current_active_version=$(rpm-ostree status --json | jq -r '.deployments[] | select(.booted == true).version')
+                current_active_digest=$(rpm-ostree status --json | jq -r '.deployments[] | select(.booted == true)["container-image-reference"]')
+
+                # Check if the active version and digest match the expected inactive version and digest
+                if [[ "$current_active_version" == "$inactive_version" ]] && [[ "$current_active_digest" == "$inactive_digest" ]]; then
+                    echo "Current active version and digest match the expected values. Stopping the timer."
+                    systemctl disable --now check_bootstrap_status.timer
+                else
+                  # Check if the specific hash exists in inactive deployments
+                  if rpm-ostree status --json | jq -r '.deployments[] | select(.booted == false)["container-image-reference"]' | grep -q "$inactive_digest"; then
+                    echo "Inactive version $inactive_version detected. Rebooting..."
+                    systemctl disable --now check_bootstrap_status.timer
+                    systemctl reboot
+                  else
+                    echo "FCOS version not detected in inactive deployments. No action taken."
+                  fi
+                fi
+            else
+              echo "rpm-ostree is not in idle state. No action taken."
+            fi
+          else
+            echo "Hostname does not contain 'bootstrap'. Disabling timer."
+            systemctl disable --now check_bootstrap_status.timer
+          fi
+    - path: /etc/systemd/system/check_bootstrap_status.service
+      mode: 0644
+      contents:
+        inline: |
+          [Unit]
+          Description=Check FCOS Version and Reboot if 39
+          After=network.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/check_bootstrap_status.sh
+
+          [Install]
+          WantedBy=multi-user.target
+    - path: /etc/systemd/system/check_bootstrap_status.timer
+      mode: 0644
+      contents:
+        inline: |
+          [Unit]
+          Description=Run Check FCOS Version Service every 5 minutes
+
+          [Timer]
+          OnBootSec=5min
+          OnUnitActiveSec=5min
+
+          [Install]
+          WantedBy=timers.target
+
+
+systemd:
+  units:
+    - name: "apply-network-config.service"
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Apply Network Configuration
+        After=network-pre.target NetworkManager.service
+        Wants=network-online.target
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/bin/nmcli connection reload
+        ExecStart=/usr/bin/systemctl restart NetworkManager.service
+        ExecStart=/usr/bin/systemctl restart systemd-resolved.service
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: "install-qemu-guest-agent.service"
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Ensure qemu-guest-agent is installed
+        Wants=network-online.target
+        After=network-online.target
+        Before=zincati.service
+        ConditionPathExists=!/var/lib/%N.stamp
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=rpm-ostree install --allow-inactive --assumeyes qemu-guest-agent
+        ExecStart=/bin/touch /var/lib/%N.stamp
+
+        [Install]
+        WantedBy=multi-user.target    
+    - name: check_bootstrap_status.service
+      enabled: true
+    - name: check_bootstrap_status.timer
+      enabled: true
+
+
+kernel_arguments:
+  should_exist:
+    - console=ttyS0,115200n8
+    - console=tty0
+    - ignition.platform.id=qemu
+    

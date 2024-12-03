@@ -1,0 +1,115 @@
+---
+- name: Wait for OpenShift Bootstrap Completion
+  hosts: all
+  become: yes
+  vars:
+    ansible_user:                 "{{ lookup('env', 'ANSIBLE_USER') }}"
+    bootstrap_ip:                 "{{ lookup('env', 'BOOTSTRAP_IP') }}"
+    kubeadmin_pass_output_path:   "{{ lookup('env', 'KUBEADMIN_PASS_OUTPUT_PATH') }}"
+    ssh_private_key:              "{{ lookup('env', 'SSH_PRIVATE_KEY') }}"
+    ssh_private_key_file:         "{{ lookup('file', lookup('env', 'SSH_PRIVATE_KEY')) }}"
+    tf_vars_path:                 "{{ lookup('env', 'TF_VARS_PATH') }}"
+  tasks:
+    - name: Wait for bootstrap to complete
+      command: >
+        /usr/local/bin/openshift-install --dir=/root/install_dir/ wait-for bootstrap-complete --log-level=info
+      register: bootstrap_wait
+      retries: 100
+      delay: 300
+      until: bootstrap_wait.rc == 0
+      ignore_errors: yes
+
+    - name: Debug bootstrap wait result
+      debug:
+        var: bootstrap_wait.stdout_lines
+
+    - name: Ensure .kube directory exists
+      file:
+        path: /home/{{ ansible_user }}/.kube
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+
+    - name: Check if kubeconfig file exists
+      stat:
+        path: /root/install_dir/auth/kubeconfig
+      register: kubeconfig_stat
+
+    - name: Debug kubeconfig file status
+      debug:
+        var: kubeconfig_stat
+
+    - name: Copy kubeconfig to ansible_user's home directory
+      copy:
+        src: /root/install_dir/auth/kubeconfig
+        dest: /home/{{ ansible_user }}/.kube/config
+        remote_src: yes
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0600'
+      when: kubeconfig_stat.stat.exists
+
+    - name: Set KUBECONFIG environment variable for ansible_user
+      lineinfile:
+        path: /home/{{ ansible_user }}/.bashrc
+        line: 'export KUBECONFIG=/home/{{ ansible_user }}/.kube/config'
+        create: yes
+
+    - name: Set KUBECONFIG environment variable for root
+      lineinfile:
+        path: /root/.bashrc
+        line: 'export KUBECONFIG=/home/{{ ansible_user }}/.kube/config'
+        create: yes
+        
+    - name: Ensure CSR approval script is present
+      copy:
+        dest: /usr/local/bin/approve-csrs.sh
+        content: |
+          #!/bin/bash
+          export HOME=/home/{{ ansible_user }}
+          export KUBECONFIG=$HOME/.kube/config
+
+          # Log environment to file for debugging
+          echo "Running approve-csrs.sh" >> /var/log/approve-csrs.log
+          echo "HOME=$HOME" >> /var/log/approve-csrs.log
+          echo "KUBECONFIG=$KUBECONFIG" >> /var/log/approve-csrs.log
+          echo "PATH=$PATH" >> /var/log/approve-csrs.log
+
+          /usr/local/bin/oc get csr -o go-template='{% raw %}{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}{% endraw %}' | xargs /usr/local/bin/oc adm certificate approve
+ 
+    - name: Set up cron job for CSR approval
+      cron:
+        name: "Approve pending CSRs"
+        job: "/usr/local/bin/approve-csrs.sh"
+        user: "root"
+        minute: "*/5"
+
+    - name: Enable approve-csrs script
+      command: chmod +x /usr/local/bin/approve-csrs.sh
+
+    - name: Shutdown Bootstrap Node using inline private key
+      command: echo "{{ ssh_private_key_file }}" | ssh -o StrictHostKeyChecking=no -i /dev/stdin core@{{ bootstrap_ip }} "sudo shutdown now"
+
+    - name: Update Terraform variable to stop bootstrap node
+      lineinfile:
+        path: "{{ tf_vars_path }}"
+        regexp: '^bootstrap_node_state\s*=\s*".*"'
+        line: 'bootstrap_node_state = "stopped"'
+      delegate_to: localhost
+      become: no  
+
+    - name: Retrieve OpenShift kubeadmin password
+      command: cat /root/install_dir/auth/kubeadmin-password
+      register: kubeadmin_password
+      no_log: true
+      become: yes
+
+    - name: Write the kubeadmin password to a temporary file
+      copy:
+        content: "{{ kubeadmin_password.stdout }}"
+        dest: "{{ kubeadmin_pass_output_path }}"
+        mode: '0600'
+      delegate_to: localhost
+      no_log: true
+      become: no  

@@ -1,0 +1,56 @@
+# Terraform state files
+*.tfstate
+*.tfstate.*
+
+# Crash log files
+crash.log
+
+# Terraform variables files
+*.tfvars
+*.tfvars.json
+
+# Terraform override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Terraform plan files
+*.tfplan
+
+# Terraform provider lock file
+.terraform.lock.hcl
+
+# .terraform directory
+.terraform/
+
+# Local environment variables
+.env
+
+# Exclude specific directories
+**/terraform.tfstate
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+
+# macOS specific files
+.DS_Store
+
+# Windows specific files
+Thumbs.db
+
+# Editor backup files
+*~
+*#
+
+# IDE specific files
+.idea/
+.vscode/
+
+# Ansible-related files if used together with Terraform
+*.retry
+
+# Linux specific files
+*.swp
+
+testing.test

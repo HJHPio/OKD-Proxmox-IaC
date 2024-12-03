@@ -1,0 +1,481 @@
+---
+- name: Configure OKD Manager Node
+  hosts: all
+  become: yes
+  vars:
+    subdomain:            "{{ lookup('env', 'OKD_SUBDOMAIN') }}"
+    domain_name:          "{{ lookup('env', 'OKD_DOMAIN') }}"
+    cluster_name_prefix:  "{{ lookup('env', 'OKD_CLUSTER_NAME_PREFIX') }}"
+    ssh_public_key:       "{{ lookup('file', lookup('env', 'SSH_PUBLIC_KEY')) }}"
+    ssh_private_key:      "{{ lookup('file', lookup('env', 'SSH_PRIVATE_KEY')) }}"
+    pull_secret_file:     "{{ lookup('file', lookup('env', 'PULL_SECRET_FILE')) }}"
+    ansible_user:         "{{ lookup('env', 'ANSIBLE_USER') }}"
+    okd_version:          "{{ lookup('env', 'OKD_VERSION') }}"
+    custom_dns:           "{{ lookup('env', 'CUSTOM_DNS') }}"
+    api_ip:               "{{ lookup('env', 'API_IP') }}"
+    bootstrap_ip:         "{{ lookup('env', 'BOOTSTRAP_IP') }}"
+    primary_ips:           "{{ lookup('env', 'PRIMARY_IPS').split(',') }}"
+    compute_ips:           "{{ lookup('env', 'COMPUTE_IPS').split(',') }}"
+
+  tasks:
+
+    - name: Add SSH public key to authorized_keys
+      authorized_key:
+        user: "{{ ansible_user }}"
+        state: present
+        key: "{{ ssh_public_key }}"
+
+    - name: Copy SSH private key to manager node
+      copy:
+        dest: /home/{{ ansible_user }}/.ssh/id_rsa
+        content: "{{ ssh_private_key }}"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0600'
+
+    - name: Ensure .ssh directory has correct permissions
+      file:
+        path: /home/{{ ansible_user }}/.ssh
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0700'
+
+    - name: Install all required packages
+      block:
+        - name: Clean DNF cache
+          ansible.builtin.dnf:
+            name: '*'
+            state: latest
+            update_cache: yes
+
+        - name: Install required packages
+          ansible.builtin.dnf:
+            name: "{{ item }}"
+            state: present
+          with_items:
+            - iptables-libs
+            - iptables-nft
+            - dnsmasq
+            - python3-firewall
+            - firewalld
+            - haproxy
+            - httpd
+            - wget
+            - qemu-guest-agent
+          register: install_results
+          until: install_results is succeeded
+          retries: 3
+          delay: 10
+      
+      rescue:
+        - name: Debug package installation failure
+          debug:
+            msg: "Failed to install required packages"
+
+        - name: Try to install packages again
+          ansible.builtin.dnf:
+            name: "{{ item }}"
+            state: present
+          with_items:
+            - iptables-libs
+            - iptables-nft
+            - dnsmasq
+            - python3-firewall
+            - firewalld
+            - haproxy
+            - httpd
+            - wget
+            - qemu-guest-agent
+          register: retry_results
+          until: retry_results is succeeded
+          retries: 3
+          delay: 10
+
+    - name: Download and extract OpenShift installer and client
+      shell: |
+        cd /root
+        wget https://github.com/okd-project/okd/releases/download/{{ okd_version }}/openshift-client-linux-{{ okd_version }}.tar.gz
+        wget https://github.com/okd-project/okd/releases/download/{{ okd_version }}/openshift-install-linux-{{ okd_version }}.tar.gz
+        tar -zxvf openshift-client-linux-{{ okd_version }}.tar.gz
+        tar -zxvf openshift-install-linux-{{ okd_version }}.tar.gz
+
+    - name: Check if systemd-resolved is present
+      command: systemctl list-units --type=service --all
+      register: systemd_units
+
+    - name: Disable systemd-resolved if present
+      systemd:
+        name: systemd-resolved
+        enabled: no
+        state: stopped
+      when: "'systemd-resolved.service' in systemd_units.stdout"
+
+    - name: Kill any running dnsmasq instances
+      shell: sudo killall -9 dnsmasq
+      ignore_errors: yes
+
+    - name: Remove resolv.conf symbolic link
+      file:
+        path: /etc/resolv.conf
+        state: absent
+
+    - name: Create new resolv.conf file
+      copy:
+        dest: /etc/resolv.conf
+        content: |
+          {% if custom_dns %}
+          nameserver {{ custom_dns }}
+          {% endif %}
+          nameserver 1.1.1.1
+          nameserver 8.8.8.8
+          nameserver 1.0.0.1
+
+    - name: Backup default dnsmasq.conf
+      command: mv /etc/dnsmasq.conf /etc/dnsmasq.conf.bak
+      args:
+        creates: /etc/dnsmasq.conf.bak
+
+    - name: Create new dnsmasq.conf file
+      copy:
+        dest: /etc/dnsmasq.conf
+        content: |
+          port=53
+          domain-needed
+          bogus-priv
+          strict-order
+          expand-hosts
+          domain={{ subdomain }}.{{ domain_name }}
+          address=/apps.{{ subdomain }}.{{ domain_name }}/{{ api_ip }}
+          address=/api-int.{{ subdomain }}.{{ domain_name }}/{{ api_ip }}
+          address=/api.{{ subdomain }}.{{ domain_name }}/{{ api_ip }}
+          listen-address=127.0.0.1,{{ api_ip }},0.0.0.0
+          log-queries
+          log-facility=/var/log/dnsmasq.log
+
+    - name: Backup original /etc/cloud/templates/hosts.redhat.tmpl
+      copy:
+        src: /etc/cloud/templates/hosts.redhat.tmpl
+        dest: /etc/cloud/templates/hosts.redhat.tmpl.bak
+        remote_src: yes
+
+    - name: Add custom DNS records to /etc/cloud/templates/hosts.redhat.tmpl
+      blockinfile:
+        path: /etc/cloud/templates/hosts.redhat.tmpl
+        marker: "# {mark} ANSIBLE MANAGED BLOCK"
+        block: |
+          {{ api_ip }}        api
+          {{ api_ip }}        api.{{ subdomain }}.{{ domain_name }} api
+          {{ api_ip }}        api-int.{{ subdomain }}.{{ domain_name }} api
+          {{ bootstrap_ip }}  {{ cluster_name_prefix }}-bootstrap-00.{{ subdomain }}.{{ domain_name }} {{ cluster_name_prefix }}-bootstrap-00
+          {% for ip in primary_ips %}
+          {{ ip }} {{ cluster_name_prefix }}-primary-{{ '%02d' | format(loop.index0) }}.{{ subdomain }}.{{ domain_name }} {{ cluster_name_prefix }}-primary-{{ '%02d' | format(loop.index0) }}
+          {% endfor %}
+          {% for ip in compute_ips %}
+          {{ ip }} {{ cluster_name_prefix }}-compute-{{ '%02d' | format(loop.index0) }}.{{ subdomain }}.{{ domain_name }} {{ cluster_name_prefix }}-compute-{{ '%02d' | format(loop.index0) }}
+          {% endfor %}
+
+    - name: Modify /etc/resolv.conf to use local dnsmasq
+      copy:
+        dest: /etc/resolv.conf
+        content: |
+          nameserver 127.0.0.1
+          {% if custom_dns %}
+          nameserver {{ custom_dns }}
+          {% endif %}
+          nameserver 1.1.1.1
+          nameserver 8.8.8.8
+          nameserver 1.0.0.1
+
+    - name: Restart dnsmasq service
+      systemd:
+        name: dnsmasq
+        state: restarted
+        enabled: yes
+
+    - name: Start and enable firewalld service
+      systemd:
+        name: firewalld
+        state: started
+        enabled: yes
+
+    - name: Reload firewall
+      command: firewall-cmd --reload
+
+    - name: Backup default HAProxy configuration
+      command: mv /etc/haproxy/haproxy.cfg /etc/haproxy/haproxy.cfg.bak
+      args:
+        creates: /etc/haproxy/haproxy.cfg.bak
+
+    - name: Create custom HAProxy configuration
+      copy:
+        dest: /etc/haproxy/haproxy.cfg
+        content: |
+          global
+              maxconn     20000
+              log         /dev/log local0 info
+              chroot      /var/lib/haproxy
+              pidfile     /var/run/haproxy.pid
+              user        haproxy
+              group       haproxy
+              daemon
+              stats socket /var/lib/haproxy/stats
+
+          defaults
+              mode                    http
+              log                     global
+              option                  httplog
+              option                  dontlognull
+              option http-server-close
+              option forwardfor       except 127.0.0.0/8
+              option                  redispatch
+              retries                 3
+              timeout http-request    10s
+              timeout queue           1m
+              timeout connect         10s
+              timeout client          300s
+              timeout server          300s
+              timeout http-keep-alive 10s
+              timeout check           10s
+              maxconn                 20000
+
+          listen stats
+              bind :9000
+              mode http
+              stats enable
+              stats uri /
+
+          frontend {{ cluster_name_prefix }}_k8s_api_fe
+              bind :6443
+              default_backend {{ cluster_name_prefix }}_k8s_api_be
+              mode tcp
+              option tcplog
+
+          backend {{ cluster_name_prefix }}_k8s_api_be
+              balance source
+              mode tcp
+              server {{ cluster_name_prefix }}-bootstrap-00 {{ bootstrap_ip }}:6443 check
+              {% for ip in primary_ips %}
+              server {{ cluster_name_prefix }}-primary-{{ '%02d' | format(loop.index0) }} {{ ip }}:6443 check
+              {% endfor %}
+
+          frontend {{ cluster_name_prefix }}_machine_config_server_fe
+              bind :22623
+              default_backend {{ cluster_name_prefix }}_machine_config_server_be
+              mode tcp
+              option tcplog
+
+          backend {{ cluster_name_prefix }}_machine_config_server_be
+              balance source
+              mode tcp
+              server {{ cluster_name_prefix }}-bootstrap-00 {{ bootstrap_ip }}:22623 check
+              {% for ip in primary_ips %}
+              server {{ cluster_name_prefix }}-primary-{{ '%02d' | format(loop.index0) }} {{ ip }}:22623 check
+              {% endfor %}
+
+          frontend {{ cluster_name_prefix }}_http_ingress_traffic_fe
+              bind :80
+              default_backend {{ cluster_name_prefix }}_http_ingress_traffic_be
+              mode tcp
+              option tcplog
+
+          backend {{ cluster_name_prefix }}_http_ingress_traffic_be
+              balance source
+              mode tcp
+              {% for ip in primary_ips %}
+              server {{ cluster_name_prefix }}-primary-{{ '%02d' | format(loop.index0) }} {{ ip }}:80 check
+              {% endfor %}
+              {% for ip in compute_ips %}
+              server {{ cluster_name_prefix }}-compute-{{ '%02d' | format(loop.index0) }} {{ ip }}:80 check
+              {% endfor %}
+
+          frontend {{ cluster_name_prefix }}_https_ingress_traffic_fe
+              bind *:443
+              default_backend {{ cluster_name_prefix }}_https_ingress_traffic_be
+              mode tcp
+              option tcplog
+
+          backend {{ cluster_name_prefix }}_https_ingress_traffic_be
+              balance source
+              mode tcp
+              {% for ip in primary_ips %}
+              server {{ cluster_name_prefix }}-primary-{{ '%02d' | format(loop.index0) }} {{ ip }}:443 check
+              {% endfor %}
+              {% for ip in compute_ips %}
+              server {{ cluster_name_prefix }}-compute-{{ '%02d' | format(loop.index0) }} {{ ip }}:443 check
+              {% endfor %}
+
+    - name: Modify SELinux settings for HAProxy
+      command: setsebool -P "{{ item }}"
+      with_items:
+        - haproxy_connect_any=1
+        - httpd_can_network_connect=on
+        - httpd_graceful_shutdown=on
+        - httpd_can_network_relay=on
+        - nis_enabled=on
+
+    - name: Add HAProxy ports to SELinux
+      command: semanage port -a -t http_port_t -p tcp {{ item }}
+      loop:
+        - 6443
+        - 22623
+        - 1936
+        - 80
+        - 443
+        - 8080
+
+    - name: Add DNS port 53 to SELinux (tcp) if not added
+      command: semanage port -a -t dns_port_t -p tcp 53
+
+    - name: Add DNS port 53 to SELinux (udp) if not added
+      command: semanage port -a -t dns_port_t -p udp 53
+
+    - name: Enable and start HAProxy service
+      systemd:
+        name: haproxy
+        state: started
+        enabled: yes
+
+    - name: Allow OKD ports through the firewall
+      firewalld:
+        port: "{{ item }}"
+        permanent: yes
+        state: enabled
+      with_items:
+        - 6443/tcp
+        - 22623/tcp
+        - 1936/tcp
+        - 8080/tcp
+        - 53/udp
+        - 53/tcp
+        - 43/tcp
+        - 80/tcp
+        - 22/tcp
+        - 443/tcp
+
+    - name: Allow HTTP and HTTPS services through the firewall
+      firewalld:
+        service: "{{ item }}"
+        permanent: yes
+        state: enabled
+      with_items:
+        - http
+        - https
+
+    - name: Reload firewall
+      command: firewall-cmd --reload
+
+    - name: Change Apache listen port to 8080
+      replace:
+        path: /etc/httpd/conf/httpd.conf
+        regexp: '^Listen 80'
+        replace: 'Listen 8080'
+
+    - name: Set SELinux boolean for Apache to read user content
+      command: setsebool -P httpd_read_user_content 1
+
+    - name: Enable and start Apache service
+      systemd:
+        name: httpd
+        state: started
+        enabled: yes
+
+    - name: Reload firewall
+      command: firewall-cmd --reload
+
+    - name: Move OpenShift binaries to /usr/local/bin
+      shell: |
+        sudo mv /root/kubectl /root/oc /root/openshift-install /usr/local/bin/
+        echo "export PATH=\$PATH:/usr/local/bin" | sudo tee -a /etc/profile
+        echo "export PATH=\$PATH:/usr/local/bin" | sudo tee -a /home/{{ ansible_user }}/.bashrc
+        echo "export PATH=\$PATH:/usr/local/bin" | sudo tee -a /root/.bash_profile
+        source /etc/profile
+
+    - name: Verify OpenShift installation
+      shell: |
+        source /etc/profile
+        oc version
+        openshift-install version
+        kubectl version --client
+      register: openshift_installation_output
+
+    - name: Display OpenShift installation output
+      debug:
+        var: openshift_installation_output.stdout_lines
+
+    - name: Create install directory
+      file:
+        path: /root/install_dir
+        state: directory
+
+    - name: Create install-config.yaml
+      copy:
+        dest: /root/install_dir/install-config.yaml
+        content: |
+          apiVersion: v1
+          baseDomain: {{ domain_name }}
+          metadata:
+            name: {{ subdomain }}
+
+          compute:
+          - hyperthreading: Enabled
+            name: worker
+            replicas: {{ compute_ips | length }}
+
+          controlPlane:
+            hyperthreading: Enabled
+            name: master
+            replicas: {{ primary_ips | length }}
+
+          networking:
+            clusterNetwork:
+            - cidr: 10.128.0.0/14 
+              hostPrefix: 23 
+            networkType: OVNKubernetes
+            serviceNetwork: 
+            - 172.30.0.0/16
+
+          platform:
+            none: {}
+
+          fips: false
+
+          pullSecret: '{"auths":{"fake":{"auth": "aWQ6cGFzcwo="}}}'
+          {% if ssh_public_key %}
+          sshKey: '{{ ssh_public_key }}'
+          {% endif %}
+    
+    - name: Generate manifests
+      shell: |
+        /usr/local/bin/openshift-install create manifests --dir=/root/install_dir/
+        sed -i 's/mastersSchedulable: false/mastersSchedulable: true/' /root/install_dir/manifests/cluster-scheduler-02-config.yml
+
+    - name: Generate ignition configs
+      shell: |
+        /usr/local/bin/openshift-install create ignition-configs --dir=/root/install_dir/
+
+    - name: Copy ignition files to Apache web server
+      shell: |
+        mkdir -p /var/www/html/{{ cluster_name_prefix }}
+        cp -R /root/install_dir/* /var/www/html/{{ cluster_name_prefix }}/
+        chown -R apache: /var/www/html/
+        chmod -R 755 /var/www/html/
+
+    - name: Test Apache server
+      shell: curl localhost:8080/{{ cluster_name_prefix }}/metadata.json
+      register: apache_test_output
+
+    - name: Display Apache server test output
+      debug:
+        var: apache_test_output.stdout_lines
+
+    - name: Reboot after config ends
+      shell: sudo reboot
+      become: yes
+      become_user: "{{ ansible_user }}"
+      async: 1
+      poll: 0
+
+    - name: Wait for the system to come back online
+      wait_for_connection:
+        timeout: 300
+        delay: 60
