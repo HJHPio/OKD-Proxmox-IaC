@@ -2,3 +2,4 @@
 - Remove all hardcoded values. Currently identified: storage name "big-data" and domain name (OKD_DOMAIN = "hjhp.io").
 - Replace the use of the root password with an API token for Proxmox after the FCOS update. This avoids using the KVM arguments field, which requires root access (refer to (repo-root)/infrastructure/terraform/providers.tf).
 - Integrate with Confizard for simplified setup and configuration management.
+- Debug long waiting (+1.5h) for bootstrap to finish while OKD cluster is updating - is there need of manual CSR approval?
