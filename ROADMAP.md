@@ -1,3 +1,4 @@
+- Include base image templates creation from https://gitlab.hjhp.io/hjhp/Proxmox-VM-Templates-IaC/-/blob/main/infrastructure/terraform/main.tf.
 - Add potential integration with automated storage management systems, such as [Rook](https://rook.io/) (Ceph), [Longhorn](longhorn.io), or a custom replicated NFS solution.
 - Remove all hardcoded values. Currently identified: storage name "big-data" and domain name (OKD_DOMAIN = "hjhp.io").
 - Replace the use of the root password with an API token for Proxmox after the FCOS update. This avoids using the KVM arguments field, which requires root access (refer to (repo-root)/infrastructure/terraform/providers.tf - https://github.com/coreos/fedora-coreos-docs/commit/69eecc4275f1ce04fd11c46b058a03095cb911fc).
