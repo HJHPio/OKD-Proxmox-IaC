@@ -7,6 +7,7 @@ pm_api_token_secret     = "SENSITIVE"
 okd_version             = "4.15.0-0.okd-2024-03-10-010116" # Specify the version of OKD
 custom_dns              = ""
 manager_pass            = ""
+nfs_pass                = ""
 ssh_admin_pass_hash     = "SENSITIVE"
 okd_fcos_version        = "39.20240210.3.0"
 okd_fcos_digest         = "ostree-unverified-registry:quay.io/openshift/okd-content@sha256:eb85d903c52970e2d6823d92c880b20609d8e8e0dbc5ad27e16681ff444c8c83"

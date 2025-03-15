@@ -56,6 +56,12 @@ variable "okd_net_bootstrap_ip_suffix" {
   default     = "242"
 }
 
+variable "okd_net_nfs_ip_suffix" {
+  description = "The suffix for the IP address in your internal network for nfs vm (last octet)"
+  type        = string
+  default     = "243"
+}
+
 variable "okd_net_ip_addresses_prefix" {
   description = "The prefix for the IP addresses in your internal network (first 3 octets)"
   type        = string
@@ -82,6 +88,17 @@ variable "manager_user" {
 
 variable "manager_pass" {
   description = "Password for manager node"
+  type        = string
+}
+
+variable "nfs_user" {
+  description = "Username for nfs vm"
+  type        = string
+  default     = "okduser"
+}
+
+variable "nfs_pass" {
+  description = "Password for nfs vm"
   type        = string
 }
 
@@ -121,4 +138,34 @@ variable "bootstrap_node_state" {
   type        = string
   description = "Bootstrap vm node state"
   default     = "running"
+}
+
+variable "primary_count" {
+  description = "Number of primary VMs to create"
+  type        = number
+  default     = 3  
+}
+
+variable "compute_count" {
+  description = "Number of compute VMs to create"
+  type        = number
+  default     = 3  
+}
+
+variable "configure_nfs_server" {
+  description = "Configure NFS server module"
+  type        = bool
+  default     = true
+}
+
+variable "nfs_provider_version" {
+  description = "Version of used NFS provider"
+  type        = string
+  default     = "4.0.18"
+}
+
+variable "nfs_path" {
+  description = "Path to NFS export dir"
+  type        = string
+  default     = "/data/nfs"
 }

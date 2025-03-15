@@ -121,3 +121,37 @@ variable "bootstrap_node_state" {
   description = "Bootstrap vm node state"
   default     = "running"
 }
+
+variable "primary_ips_str" {
+  type = string
+  description = "List of primary IP addresses ',' separated"
+}
+
+variable "compute_ips_str" {
+  type = string
+  description = "List of compute IP addresses ',' separated"
+}
+
+variable "configure_nfs_provider" {
+  description = "Configure NFS provider helm in OKD"
+  type        = bool
+  default     = true
+}
+
+variable "okd_net_nfs_ip_suffix" {
+  description = "The suffix for the IP address in your internal network for nfs vm (last octet)"
+  type        = string
+  default     = "243"
+}
+
+variable "nfs_provider_version" {
+  description = "Version of used NFS provider"
+  type        = string
+  default     = "4.0.18"
+}
+
+variable "nfs_path" {
+  description = "Path to NFS export dir"
+  type        = string
+  default     = "/data/nfs"
+}

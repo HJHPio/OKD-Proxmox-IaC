@@ -1,0 +1,95 @@
+---
+- name: Configure OKD NFS Provisioner
+  hosts: all
+  become: yes
+  vars:
+    ansible_user:         "{{ lookup('env', 'ANSIBLE_USER') }}"
+    nfs_ip:               "{{ lookup('env', 'NFS_IP') }}"
+    nfs_provider_version: "{{ lookup('env', 'NFS_PROVIDER_VERSION') }}"
+    nfs_path:             "{{ lookup('env', 'NFS_PATH') }}"
+    
+  tasks:
+    - name: Ensure /usr/local/bin is in PATH for all users
+      lineinfile:
+        path: /etc/profile.d/custom_path.sh
+        line: 'export PATH=$PATH:/usr/local/bin'
+        create: yes
+        mode: '0644'
+
+    - name: Reload shell environment to apply PATH change
+      shell: source /etc/profile.d/custom_path.sh
+      args:
+        executable: /bin/bash
+
+    - name: Install all required packages
+      block:
+        - name: Clean DNF cache
+          ansible.builtin.dnf:
+            name: '*'
+            state: latest
+            update_cache: yes
+
+        - name: Install required packages
+          ansible.builtin.dnf:
+            name:
+              - git
+            state: present
+          register: install_results
+          until: install_results is succeeded
+          retries: 3
+          delay: 10
+      
+      rescue:
+        - name: Debug package installation failure
+          debug:
+            msg: "Failed to install required packages"
+
+        - name: Try to install packages again
+          ansible.builtin.dnf:
+            name:
+              - git
+            state: present
+          register: retry_results
+          until: retry_results is succeeded
+          retries: 3
+          delay: 10
+
+    - name: Install Helm
+      shell: |
+        source /etc/profile.d/custom_path.sh
+        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      args:
+        executable: /bin/bash
+
+    - name: Create script to configure NFS provisioner
+      copy:
+        dest: /usr/local/bin/configure-nfs-provisioner.sh
+        content: |
+          #!/bin/bash
+          export HOME=/home/{{ ansible_user }}
+          export KUBECONFIG=$HOME/.kube/config
+          source /etc/profile.d/custom_path.sh
+
+          # Log environment to file for debugging
+          echo "Running configure-nfs-provisioner.sh" >> /var/log/configure-nfs-provisioner.log
+          echo "HOME=$HOME" >> /var/log/configure-nfs-provisioner.log
+          echo "KUBECONFIG=$KUBECONFIG" >> /var/log/configure-nfs-provisioner.log
+          echo "PATH=$PATH" >> /var/log/configure-nfs-provisioner.log
+          
+          oc new-project nfs-subdir-external-provisioner >> /var/log/configure-nfs-provisioner.log
+          oc adm policy add-scc-to-user anyuid system:serviceaccount:nfs-subdir-external-provisioner:nfs-subdir-external-provisioner
+          oc adm policy add-scc-to-user hostmount-anyuid system:serviceaccount:nfs-subdir-external-provisioner:nfs-subdir-external-provisioner
+          helm repo add nfs-subdir-external-provisioner https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/ >> /var/log/configure-nfs-provisioner.log
+          helm install nfs-subdir-external-provisioner nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
+              --version {{ nfs_provider_version }} \
+              --set nfs.server={{ nfs_ip }} \
+              --set nfs.path={{ nfs_path }}  \
+              --set storageClass.defaultClass=true \
+              --set storageClass.archiveOnDelete=false \
+              >> /var/log/configure-nfs-provisioner.log
+
+    - name: Enable configure-nfs-provisioner script
+      command: chmod +x /usr/local/bin/configure-nfs-provisioner.sh
+
+    - name: Execute configure-nfs-provisioner script
+      command: /usr/local/bin/configure-nfs-provisioner.sh

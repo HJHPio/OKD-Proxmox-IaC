@@ -1,0 +1,98 @@
+---
+- name: Configure OKD NFS Server
+  hosts: all
+  become: yes
+  vars:
+    ssh_public_key:       "{{ lookup('file', lookup('env', 'SSH_PUBLIC_KEY')) }}"
+    ssh_private_key:      "{{ lookup('file', lookup('env', 'SSH_PRIVATE_KEY')) }}"
+    ansible_user:         "{{ lookup('env', 'ANSIBLE_USER') }}"
+    api_ip:               "{{ lookup('env', 'API_IP') }}"
+    primary_ips:          "{{ lookup('env', 'PRIMARY_IPS').split(',') }}"
+    compute_ips:          "{{ lookup('env', 'COMPUTE_IPS').split(',') }}"
+    network_mask:         "{{ lookup('env', 'NETWORK_MASK') }}" 
+    nfs_path:             "{{ lookup('env', 'NFS_PATH') }}"
+  tasks:
+
+    - name: Add SSH public key to authorized_keys
+      authorized_key:
+        user: "{{ ansible_user }}"
+        state: present
+        key: "{{ ssh_public_key }}"
+
+    - name: Copy SSH private key to nfs server
+      copy:
+        dest: /home/{{ ansible_user }}/.ssh/id_rsa
+        content: "{{ ssh_private_key }}"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0600'
+
+    - name: Ensure .ssh directory has correct permissions
+      file:
+        path: /home/{{ ansible_user }}/.ssh
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0700'
+
+    - name: Install all required packages
+      block:
+        - name: Clean DNF cache
+          ansible.builtin.dnf:
+            name: '*'
+            state: latest
+            update_cache: yes
+
+        - name: Install required packages
+          ansible.builtin.dnf:
+            name:
+              - qemu-guest-agent
+              - nfs-utils 
+            state: present
+          register: install_results
+          until: install_results is succeeded
+          retries: 3
+          delay: 10
+      
+      rescue:
+        - name: Debug package installation failure
+          debug:
+            msg: "Failed to install required packages"
+
+        - name: Try to install packages again
+          ansible.builtin.dnf:
+            name:
+              - qemu-guest-agent
+              - nfs-utils
+            state: present
+          register: retry_results
+          until: retry_results is succeeded
+          retries: 3
+          delay: 10
+
+    - name: Ensure NFS server service is started and enabled
+      ansible.builtin.service:
+        name: nfs-server
+        state: started
+        enabled: yes
+
+    - name: Create NFS share directory
+      ansible.builtin.file:
+        path: "{{ nfs_path }}"
+        state: directory
+        owner: nobody
+        group: nobody
+        mode: "2770"
+
+    - name: Generate NFS exports file
+      ansible.builtin.lineinfile:
+        path: /etc/exports
+        line: "{{ nfs_path }}\t{{ item }}/{{ network_mask }}(rw,sync,no_subtree_check,no_root_squash)"
+        create: yes
+        state: present
+        regexp: "^{{ nfs_path }}\\s+{{ item }}/{{ network_mask }}"
+      loop: "{{ [api_ip] + primary_ips + compute_ips }}"
+
+    - name: Restart NFS service to apply changes
+      ansible.builtin.service:
+        name: nfs-server
+        state: restarted
