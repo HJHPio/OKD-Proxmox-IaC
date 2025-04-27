@@ -1,0 +1,681 @@
+---
+- name: Configure OKD Manager Node
+  hosts: all
+  become: yes
+  vars:
+    subdomain:            "{{ lookup('env', 'OKD_SUBDOMAIN') }}"
+    domain_name:          "{{ lookup('env', 'OKD_DOMAIN') }}"
+    cluster_name_prefix:  "{{ lookup('env', 'OKD_CLUSTER_NAME_PREFIX') }}"
+    ssh_public_key:       "{{ lookup('file', lookup('env', 'SSH_PUBLIC_KEY')) }}"
+    ssh_private_key:      "{{ lookup('file', lookup('env', 'SSH_PRIVATE_KEY')) }}"
+    pull_secret_file:     "{{ lookup('file', lookup('env', 'PULL_SECRET_FILE')) }}"
+    ansible_user:         "{{ lookup('env', 'ANSIBLE_USER') }}"
+    okd_version:          "{{ lookup('env', 'OKD_VERSION') }}"
+    custom_dns:           "{{ lookup('env', 'CUSTOM_DNS') }}"
+    api_ip:               "{{ lookup('env', 'API_IP') }}"
+    bootstrap_ip:         "{{ lookup('env', 'BOOTSTRAP_IP') }}"
+    primary_ips:          "{{ lookup('env', 'PRIMARY_IPS').split(',') }}"
+    compute_ips:          "{{ lookup('env', 'COMPUTE_IPS').split(',') }}"
+    primary_node:         "{{ lookup('env', 'PRIMARY_NODE') | default('false') | bool }}"
+    lb_vip:               "{{ lookup('env', 'LB_VIP') }}"
+    lb0_ip:               "{{ lookup('env', 'LB0_IP') }}"
+    lb1_ip:               "{{ lookup('env', 'LB1_IP') }}"
+    network_mask:         "{{ lookup('env', 'NETWORK_MASK') }}" 
+    hacluster_pass:       "{{ lookup('env', 'PACEMAKER_CLUSTER_PASS') }}" 
+
+  tasks:
+
+    - name: Configure SSH connection
+      block:
+      - name: Add SSH public key to authorized_keys
+        authorized_key:
+          user: "{{ ansible_user }}"
+          state: present
+          key: "{{ ssh_public_key }}"
+      - name: Copy SSH private key to manager node
+        copy:
+          dest: /home/{{ ansible_user }}/.ssh/id_ed25519
+          content: |
+            {{ ssh_private_key }}
+          owner: "{{ ansible_user }}"
+          group: "{{ ansible_user }}"
+          mode: '0600'
+      - name: Copy SSH private key to manager node for root
+        copy:
+          dest: /root/.ssh/id_ed25519
+          content: |
+            {{ ssh_private_key }}
+          owner: "root"
+          group: "root"
+          mode: '0600'
+      - name: Ensure .ssh directory has correct permissions
+        file:
+          path: /home/{{ ansible_user }}/.ssh
+          owner: "{{ ansible_user }}"
+          group: "{{ ansible_user }}"
+          mode: '0700'
+      - name: Allow rsync as root
+        become: yes
+        become_user: "root"
+        shell: |
+          set -e
+          yes | \cp /root/.ssh/authorized_keys /root/.ssh/authorized_keys.backup
+          yes | \cp /home/{{ ansible_user }}/.ssh/authorized_keys /root/.ssh/authorized_keys
+
+    - name: Install all required dnf packages
+      block:
+        - name: Clean DNF cache
+          ansible.builtin.dnf:
+            name: '*'
+            state: latest
+            update_cache: yes
+
+        - name: Install required packages
+          ansible.builtin.dnf:
+            name: "{{ item }}"
+            state: present
+          with_items:
+            - iptables-libs
+            - iptables-nft
+            - dnsmasq
+            - python3-firewall
+            - firewalld
+            - haproxy
+            - httpd
+            - wget
+            - qemu-guest-agent
+          register: install_results
+          until: install_results is succeeded
+          retries: 3
+          delay: 10
+      
+      rescue:
+        - name: Debug package installation failure
+          debug:
+            msg: "Failed to install required packages"
+
+        - name: Try to install packages again
+          ansible.builtin.dnf:
+            name: "{{ item }}"
+            state: present
+          with_items:
+            - iptables-libs
+            - iptables-nft
+            - dnsmasq
+            - python3-firewall
+            - firewalld
+            - haproxy
+            - httpd
+            - wget
+            - qemu-guest-agent
+          register: retry_results
+          until: retry_results is succeeded
+          retries: 3
+          delay: 10
+
+    - name: Install all required by High Avability packages
+      block:
+
+      - name: Setup elrepo  
+        become: yes
+        become_user: "root"
+        shell: |
+          rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org || true
+          rpm --import https://www.elrepo.org/RPM-GPG-KEY-v2-elrepo.org || true
+          sudo rpm -Uvh  --nosignature https://mirror.rackspace.com/elrepo/elrepo/el10/x86_64/RPMS/elrepo-release-10.0-1.el10.elrepo.noarch.rpm
+
+      - name: Install epel-release
+        ansible.builtin.dnf:
+          name:
+            - epel-release
+            - elrepo-release
+          state: present
+        register: epel_installation
+        until: epel_installation is succeeded
+        retries: 3
+        delay: 10
+
+      - name: Enable required repos 
+        become: yes
+        become_user: "{{ ansible_user }}"
+        ansible.builtin.command: sudo dnf config-manager --set-enabled {{ item }}
+        loop:
+          - crb
+          - elrepo-testing
+          - highavailability
+        changed_when: false
+
+      - name: Run dnf update
+        become: yes
+        ansible.builtin.dnf:
+          name: '*'
+          state: latest
+        register: update_result
+        until: update_result is succeeded
+        retries: 3
+        delay: 10
+
+      - name: Install required packages
+        ansible.builtin.dnf:
+          name:
+            - vim
+            - pacemaker 
+            - corosync
+            - pcs
+            - fence-agents
+          state: present
+          disable_gpg_check: true
+        register: install_results
+        until: install_results is succeeded
+        retries: 3
+        delay: 10
+
+    - name: Create Corosync config file
+      copy:
+        dest: /etc/corosync/corosync.conf
+        content: |
+          # Please read the corosync.conf.5 manual page
+          totem {
+            version: 2
+            cluster_name: lbcluster
+            crypto_cipher: none
+            crypto_hash: none
+          }
+          logging {
+            fileline: off
+            to_stderr: yes
+            to_logfile: yes
+            logfile: /var/log/cluster/corosync.log
+            to_syslog: yes
+            debug: off
+            logger_subsys {
+              subsys: QUORUM
+              debug: off
+            }
+          }
+          quorum {
+          }
+          nodelist {
+            node {
+              name: lb-00
+              nodeid: 1
+              ring0_addr: {{ lb0_ip }}
+            }
+            node {
+              name: lb-01
+              nodeid: 2
+              ring0_addr: {{ lb1_ip }}
+            }
+          }
+
+    - name: Setup High Avability services
+      become: yes
+      become_user: "{{ ansible_user }}"
+      shell: |
+        set -e
+        echo "hacluster:{{ hacluster_pass }}" | sudo chpasswd
+        sudo systemctl enable corosync
+        sudo systemctl enable pacemaker
+        sudo systemctl enable pcsd
+        sudo systemctl start corosync
+        sudo systemctl start pacemaker
+        sudo systemctl start pcsd
+
+
+    - name: Download and extract OpenShift installer and client
+      shell: |
+        cd /root
+        wget https://github.com/okd-project/okd-scos/releases/download/{{ okd_version }}/openshift-client-linux-{{ okd_version }}.tar.gz
+        wget https://github.com/okd-project/okd-scos/releases/download/{{ okd_version }}/openshift-install-linux-{{ okd_version }}.tar.gz
+        tar -zxvf openshift-client-linux-{{ okd_version }}.tar.gz
+        tar -zxvf openshift-install-linux-{{ okd_version }}.tar.gz
+
+    - name: Configure DNS
+      block:
+      - name: Check if systemd-resolved is present
+        command: systemctl list-units --type=service --all
+        register: systemd_units
+
+      - name: Disable systemd-resolved if present
+        systemd:
+          name: systemd-resolved
+          enabled: no
+          state: stopped
+        when: "'systemd-resolved.service' in systemd_units.stdout"
+
+      - name: Kill any running dnsmasq instances
+        shell: sudo killall -9 dnsmasq
+        ignore_errors: yes
+
+      - name: Remove resolv.conf symbolic link
+        file:
+          path: /etc/resolv.conf
+          state: absent
+
+      - name: Create new resolv.conf file
+        copy:
+          dest: /etc/resolv.conf
+          content: |
+            {% if custom_dns %}
+            nameserver {{ custom_dns }}
+            {% endif %}
+            nameserver 1.1.1.1
+            nameserver 8.8.8.8
+            nameserver 1.0.0.1
+
+      - name: Backup default dnsmasq.conf
+        command: mv /etc/dnsmasq.conf /etc/dnsmasq.conf.bak
+        args:
+          creates: /etc/dnsmasq.conf.bak
+
+      - name: Create new dnsmasq.conf file
+        copy:
+          dest: /etc/dnsmasq.conf
+          content: |
+            port=53
+            domain-needed
+            bogus-priv
+            strict-order
+            expand-hosts
+            domain={{ subdomain }}.{{ domain_name }}
+            address=/apps.{{ subdomain }}.{{ domain_name }}/{{ api_ip }}
+            address=/api-int.{{ subdomain }}.{{ domain_name }}/{{ api_ip }}
+            address=/api.{{ subdomain }}.{{ domain_name }}/{{ api_ip }}
+            listen-address=127.0.0.1,{{ api_ip }},0.0.0.0
+            log-queries
+            log-facility=/var/log/dnsmasq.log
+
+      - name: Backup original /etc/cloud/templates/hosts.redhat.tmpl
+        copy:
+          src: /etc/cloud/templates/hosts.redhat.tmpl
+          dest: /etc/cloud/templates/hosts.redhat.tmpl.bak
+          remote_src: yes
+
+      - name: Add custom DNS records to /etc/cloud/templates/hosts.redhat.tmpl
+        blockinfile:
+          path: /etc/cloud/templates/hosts.redhat.tmpl
+          marker: "# {mark} ANSIBLE MANAGED BLOCK"
+          block: |
+            {{ api_ip }}        api
+            {{ api_ip }}        api.{{ subdomain }}.{{ domain_name }} api
+            {{ api_ip }}        api-int.{{ subdomain }}.{{ domain_name }} api
+            {{ bootstrap_ip }}  {{ cluster_name_prefix }}-bootstrap-00.{{ subdomain }}.{{ domain_name }} {{ cluster_name_prefix }}-bootstrap-00
+            {% for ip in primary_ips %}
+            {{ ip }} {{ cluster_name_prefix }}-primary-{{ '%02d' | format(loop.index0) }}.{{ subdomain }}.{{ domain_name }} {{ cluster_name_prefix }}-primary-{{ '%02d' | format(loop.index0) }}
+            {% endfor %}
+            {% for ip in compute_ips %}
+            {{ ip }} {{ cluster_name_prefix }}-compute-{{ '%02d' | format(loop.index0) }}.{{ subdomain }}.{{ domain_name }} {{ cluster_name_prefix }}-compute-{{ '%02d' | format(loop.index0) }}
+            {% endfor %}
+
+            {{ lb_vip }} lb-vip
+            {{ lb0_ip }} lb-00
+            {{ lb1_ip }} lb-01
+
+      - name: Modify /etc/resolv.conf to use local dnsmasq
+        copy:
+          dest: /etc/resolv.conf
+          content: |
+            nameserver 127.0.0.1
+            {% if custom_dns %}
+            nameserver {{ custom_dns }}
+            {% endif %}
+            nameserver 1.1.1.1
+            nameserver 8.8.8.8
+            nameserver 1.0.0.1
+
+      - name: Restart dnsmasq service
+        systemd:
+          name: dnsmasq
+          state: restarted
+          enabled: yes
+
+    - name: Start and enable firewalld service
+      systemd:
+        name: firewalld
+        state: started
+        enabled: yes
+
+    - name: Reload firewall
+      command: firewall-cmd --reload
+
+    - name: Backup default HAProxy configuration
+      command: mv /etc/haproxy/haproxy.cfg /etc/haproxy/haproxy.cfg.bak
+      args:
+        creates: /etc/haproxy/haproxy.cfg.bak
+
+    - name: Create custom HAProxy configuration
+      copy:
+        dest: /etc/haproxy/haproxy.cfg
+        content: |
+          global
+              maxconn     20000
+              log         /dev/log local0 info
+              chroot      /var/lib/haproxy
+              pidfile     /var/run/haproxy.pid
+              user        haproxy
+              group       haproxy
+              daemon
+              stats socket /var/lib/haproxy/stats
+
+          defaults
+              mode                    http
+              log                     global
+              option                  httplog
+              option                  dontlognull
+              option http-server-close
+              option forwardfor       except 127.0.0.0/8
+              option                  redispatch
+              retries                 3
+              timeout http-request    10s
+              timeout queue           1m
+              timeout connect         10s
+              timeout client          300s
+              timeout server          300s
+              timeout http-keep-alive 10s
+              timeout check           10s
+              maxconn                 20000
+
+          listen stats
+              bind :9000
+              mode http
+              stats enable
+              stats uri /
+
+          frontend {{ cluster_name_prefix }}_k8s_api_fe
+              bind :6443
+              default_backend {{ cluster_name_prefix }}_k8s_api_be
+              mode tcp
+              option tcplog
+
+          backend {{ cluster_name_prefix }}_k8s_api_be
+              balance source
+              mode tcp
+              server {{ cluster_name_prefix }}-bootstrap-00 {{ bootstrap_ip }}:6443 check
+              {% for ip in primary_ips %}
+              server {{ cluster_name_prefix }}-primary-{{ '%02d' | format(loop.index0) }} {{ ip }}:6443 check
+              {% endfor %}
+
+          frontend {{ cluster_name_prefix }}_machine_config_server_fe
+              bind :22623
+              default_backend {{ cluster_name_prefix }}_machine_config_server_be
+              mode tcp
+              option tcplog
+
+          backend {{ cluster_name_prefix }}_machine_config_server_be
+              balance source
+              mode tcp
+              server {{ cluster_name_prefix }}-bootstrap-00 {{ bootstrap_ip }}:22623 check
+              {% for ip in primary_ips %}
+              server {{ cluster_name_prefix }}-primary-{{ '%02d' | format(loop.index0) }} {{ ip }}:22623 check
+              {% endfor %}
+
+          frontend {{ cluster_name_prefix }}_http_ingress_traffic_fe
+              bind :80
+              default_backend {{ cluster_name_prefix }}_http_ingress_traffic_be
+              mode tcp
+              option tcplog
+
+          backend {{ cluster_name_prefix }}_http_ingress_traffic_be
+              balance source
+              mode tcp
+              {% for ip in primary_ips %}
+              server {{ cluster_name_prefix }}-primary-{{ '%02d' | format(loop.index0) }} {{ ip }}:80 check
+              {% endfor %}
+              {% for ip in compute_ips %}
+              server {{ cluster_name_prefix }}-compute-{{ '%02d' | format(loop.index0) }} {{ ip }}:80 check
+              {% endfor %}
+
+          frontend {{ cluster_name_prefix }}_https_ingress_traffic_fe
+              bind *:443
+              default_backend {{ cluster_name_prefix }}_https_ingress_traffic_be
+              mode tcp
+              option tcplog
+
+          backend {{ cluster_name_prefix }}_https_ingress_traffic_be
+              balance source
+              mode tcp
+              {% for ip in primary_ips %}
+              server {{ cluster_name_prefix }}-primary-{{ '%02d' | format(loop.index0) }} {{ ip }}:443 check
+              {% endfor %}
+              {% for ip in compute_ips %}
+              server {{ cluster_name_prefix }}-compute-{{ '%02d' | format(loop.index0) }} {{ ip }}:443 check
+              {% endfor %}
+
+    - name: Modify SELinux settings for HAProxy
+      command: setsebool -P "{{ item }}"
+      with_items:
+        - haproxy_connect_any=1
+        - httpd_can_network_connect=on
+        - httpd_graceful_shutdown=on
+        - httpd_can_network_relay=on
+        - nis_enabled=on
+
+    - name: Add HAProxy ports to SELinux
+      command: semanage port -a -t http_port_t -p tcp {{ item }}
+      loop:
+        - 6443
+        - 22623
+        - 1936
+        - 80
+        - 443
+        - 8080
+        - 2224
+        - 5405
+
+    - name: Add DNS port 53 to SELinux (tcp) if not added
+      command: semanage port -a -t dns_port_t -p tcp 53
+
+    - name: Add DNS port 53 to SELinux (udp) if not added
+      command: semanage port -a -t dns_port_t -p udp 53
+
+    - name: Enable and start HAProxy service
+      systemd:
+        name: haproxy
+        state: started
+        enabled: yes
+
+    - name: Allow OKD ports through the firewall plus HA ports
+      firewalld:
+        port: "{{ item }}"
+        permanent: yes
+        state: enabled
+      with_items:
+        - 6443/tcp
+        - 22623/tcp
+        - 1936/tcp
+        - 8080/tcp
+        - 53/udp
+        - 53/tcp
+        - 43/tcp
+        - 80/tcp
+        - 22/tcp
+        - 443/tcp
+        - 2224/tcp
+        - 5405/udp
+
+    - name: Allow HTTP and HTTPS services through the firewall
+      firewalld:
+        service: "{{ item }}"
+        permanent: yes
+        state: enabled
+      with_items:
+        - http
+        - https
+
+    - name: Reload firewall
+      command: firewall-cmd --reload
+
+    - name: Change Apache listen port to 8080
+      replace:
+        path: /etc/httpd/conf/httpd.conf
+        regexp: '^Listen 80'
+        replace: 'Listen 8080'
+
+    - name: Set SELinux boolean for Apache to read user content
+      command: setsebool -P httpd_read_user_content 1
+
+    - name: Enable and start Apache service
+      systemd:
+        name: httpd
+        state: started
+        enabled: yes
+
+    - name: Reload firewall
+      command: firewall-cmd --reload
+
+    - name: Move OpenShift binaries to /usr/local/bin
+      shell: |
+        sudo mv /root/kubectl /root/oc /root/openshift-install /usr/local/bin/
+        echo "export PATH=\$PATH:/usr/local/bin" | sudo tee -a /etc/profile
+        echo "export PATH=\$PATH:/usr/local/bin" | sudo tee -a /home/{{ ansible_user }}/.bashrc
+        echo "export PATH=\$PATH:/usr/local/bin" | sudo tee -a /root/.bash_profile
+        source /etc/profile
+
+    - name: Verify OpenShift installation
+      shell: |
+        source /etc/profile
+        oc version
+        openshift-install version
+        kubectl version --client
+      register: openshift_installation_output
+
+    - name: Display OpenShift installation output
+      debug:
+        var: openshift_installation_output.stdout_lines
+
+    - name: Create install directory
+      file:
+        path: /root/install_dir
+        state: directory
+
+    - name: Create install-config.yaml
+      copy:
+        dest: /root/install_dir/install-config.yaml
+        content: |
+          apiVersion: v1
+          baseDomain: {{ domain_name }}
+          metadata:
+            name: {{ subdomain }}
+
+          compute:
+          - hyperthreading: Enabled
+            name: worker
+            replicas: {{ compute_ips | length }}
+
+          controlPlane:
+            hyperthreading: Enabled
+            name: master
+            replicas: {{ primary_ips | length }}
+
+          networking:
+            clusterNetwork:
+            - cidr: 10.128.0.0/14 
+              hostPrefix: 23 
+            networkType: OVNKubernetes
+            serviceNetwork: 
+            - 172.30.0.0/16
+
+          platform:
+            none: {}
+
+          fips: false
+
+          pullSecret: '{"auths":{"fake":{"auth": "aWQ6cGFzcwo="}}}'
+          {% if ssh_public_key %}
+          sshKey: '{{ ssh_public_key }}'
+          {% endif %}
+      when: primary_node
+    
+    - name: Configure High Avability cluster as primary node
+      become: yes
+      become_user: "{{ ansible_user }}"
+      # Force cluster setup, becouse on another/secondary host services will be in running state
+      shell: |
+        set -e
+        echo "Waiting for secondary host"
+        sleep 40 # wait for secondary host to finish
+        
+        sudo pcs cluster auth -u hacluster -p {{ hacluster_pass }}
+        sudo pcs cluster setup --start --force lbcluster lb-00 lb-01 
+        sudo pcs cluster start --all
+        sudo pcs cluster enable --all
+        sudo pcs property set stonith-enabled=false
+        sudo pcs property set no-quorum-policy=ignore
+        for i in {1..5}; do
+          sudo pcs cluster cib lb-cluster-config && \
+          sudo pcs -f lb-cluster-config resource create lb_cluster_vip ocf:heartbeat:IPaddr2 ip={{ lb_vip }}  cidr_netmask={{ network_mask }} && \
+          sudo pcs -f lb-cluster-config resource create lb_HAProxy systemd:haproxy  && \
+          sudo pcs -f lb-cluster-config constraint colocation add lb_cluster_vip with lb_HAProxy score=INFINITY  && \
+          sudo pcs cluster cib-push --config lb-cluster-config && break
+          echo "Retrying in 10s..."
+          sleep 10
+        done
+      when: primary_node
+
+    - name: Configure OpenShift OKD installation on primary manager node
+      when: primary_node
+      block:
+      - name: Generate manifests
+        shell: |
+          /usr/local/bin/openshift-install create manifests --dir=/root/install_dir/
+      - name: Generate ignition configs
+        shell: |
+          /usr/local/bin/openshift-install create ignition-configs --dir=/root/install_dir/
+      - name: Copy ignition files to Apache web server
+        shell: |
+          mkdir -p /var/www/html/{{ cluster_name_prefix }}
+          cp -R /root/install_dir/* /var/www/html/{{ cluster_name_prefix }}/
+          chown -R apache: /var/www/html/
+          chmod -R 755 /var/www/html/
+      - name: Test Apache server
+        shell: |
+          curl localhost:8080/{{ cluster_name_prefix }}/metadata.json
+        register: apache_test_output
+      - name: Display Apache server test output
+        debug:
+          var: apache_test_output.stdout_lines
+
+    - name: Copy files from primary manager node to secondary node (install_dir)
+      when: primary_node
+      shell: |
+        sudo rsync -avz -e "ssh -o StrictHostKeyChecking=no" /root/install_dir/ root@{{ lb1_ip }}:/root/install_dir/
+
+    - name: Copy files from primary manager node to secondary node (html dir)
+      when: primary_node
+      shell: |
+        sudo rsync -avz -e "ssh -o StrictHostKeyChecking=no" /var/www/html/{{ cluster_name_prefix }}/ root@{{ lb1_ip }}:/var/www/html/{{ cluster_name_prefix }}/
+
+    - name: Wait for files to be copied if not primary node
+      when: not primary_node
+      block:
+        - name: Wait for /var/www/html/{{ cluster_name_prefix }}/metadata.json to exist
+          ansible.builtin.wait_for:
+            path: "/var/www/html/{{ cluster_name_prefix }}/metadata.json"
+            timeout: 3600
+            state: present
+            delay: 10
+        - name: Test Apache server
+          shell: |
+            chown -R apache: /var/www/html/
+            chmod -R 755 /var/www/html/
+            for i in {1..10}; do
+              curl -sf localhost:8080/{{ cluster_name_prefix }}/metadata.json && break
+              echo "Waiting for Apache to serve metadata.json... ($i)"
+              sleep 5
+            done
+          register: apache_test_output
+        - name: Display Apache server test output
+          debug:
+            var: apache_test_output.stdout_lines
+
+    - name: Reboot after config ends
+      shell: sudo reboot
+      become: yes
+      become_user: "{{ ansible_user }}"
+      async: 1
+      poll: 0
+
+    - name: Wait for the system to come back online
+      wait_for_connection:
+        timeout: 300
+        delay: 60

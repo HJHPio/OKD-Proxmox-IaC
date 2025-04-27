@@ -60,6 +60,10 @@
         curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
       args:
         executable: /bin/bash
+      register: helm_installation_status
+      retries: 10
+      delay: 60
+      until: helm_installation_status.rc == 0
 
     - name: Create script to configure NFS provisioner
       copy:
@@ -90,6 +94,19 @@
 
     - name: Enable configure-nfs-provisioner script
       command: chmod +x /usr/local/bin/configure-nfs-provisioner.sh
+
+    - name: Wait for Kubernetes API to become reachable
+      shell: |
+        set -e
+        export HOME=/home/{{ ansible_user }}
+        export KUBECONFIG=$HOME/.kube/config
+        source /etc/profile.d/custom_path.sh
+        oc status
+      register: oc_status
+      retries: 30
+      delay: 60
+      until: oc_status.rc == 0
+      ignore_errors: yes
 
     - name: Execute configure-nfs-provisioner script
       command: /usr/local/bin/configure-nfs-provisioner.sh

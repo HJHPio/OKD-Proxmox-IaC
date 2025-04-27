@@ -11,6 +11,12 @@
     compute_ips:          "{{ lookup('env', 'COMPUTE_IPS').split(',') }}"
     network_mask:         "{{ lookup('env', 'NETWORK_MASK') }}" 
     nfs_path:             "{{ lookup('env', 'NFS_PATH') }}"
+    nfs_vip:              "{{ lookup('env', 'NFS_VIP') }}"
+    nfs0_ip:              "{{ lookup('env', 'NFS0_IP') }}"
+    nfs1_ip:              "{{ lookup('env', 'NFS1_IP') }}"
+    primary_nfs:          "{{ lookup('env', 'PRIMARY_NFS') | default('false') | bool }}"
+    hacluster_pass:       "{{ lookup('env', 'PACEMAKER_CLUSTER_PASS') }}" 
+
   tasks:
 
     - name: Add SSH public key to authorized_keys
@@ -34,46 +40,62 @@
         group: "{{ ansible_user }}"
         mode: '0700'
 
-    - name: Install all required packages
-      block:
-        - name: Clean DNF cache
-          ansible.builtin.dnf:
-            name: '*'
-            state: latest
-            update_cache: yes
+    - name: Setup elrepo  
+      become: yes
+      become_user: "root"
+      shell: |
+        rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org || true
+        rpm --import https://www.elrepo.org/RPM-GPG-KEY-v2-elrepo.org || true
+        sudo rpm -Uvh  --nosignature https://mirror.rackspace.com/elrepo/elrepo/el10/x86_64/RPMS/elrepo-release-10.0-1.el10.elrepo.noarch.rpm
 
-        - name: Install required packages
-          ansible.builtin.dnf:
-            name:
-              - qemu-guest-agent
-              - nfs-utils 
-            state: present
-          register: install_results
-          until: install_results is succeeded
-          retries: 3
-          delay: 10
-      
-      rescue:
-        - name: Debug package installation failure
-          debug:
-            msg: "Failed to install required packages"
+    - name: Install epel-release
+      ansible.builtin.dnf:
+        name:
+          - epel-release
+          - elrepo-release
+        state: present
+      register: epel_installation
+      until: epel_installation is succeeded
+      retries: 3
+      delay: 10
 
-        - name: Try to install packages again
-          ansible.builtin.dnf:
-            name:
-              - qemu-guest-agent
-              - nfs-utils
-            state: present
-          register: retry_results
-          until: retry_results is succeeded
-          retries: 3
-          delay: 10
+    - name: Enable required repos 
+      become: yes
+      become_user: "{{ ansible_user }}"
+      ansible.builtin.command: sudo dnf config-manager --set-enabled {{ item }}
+      loop:
+        - crb
+        - elrepo-testing
+        - highavailability
+      changed_when: false
 
-    - name: Ensure NFS server service is started and enabled
-      ansible.builtin.service:
-        name: nfs-server
-        state: started
-        enabled: yes
+    - name: Run dnf update
+      become: yes
+      ansible.builtin.dnf:
+        name: '*'
+        state: latest
+      register: update_result
+      until: update_result is succeeded
+      retries: 3
+      delay: 10
+
+    - name: Install required packages
+      ansible.builtin.dnf:
+        name:
+          - drbd9x-utils
+          - kmod-drbd9x 
+          - vim
+          - qemu-guest-agent
+          - nfs-utils 
+          - pacemaker 
+          - corosync
+          - pcs
+        state: present
+        disable_gpg_check: true
+      register: install_results
+      until: install_results is succeeded
+      retries: 3
+      delay: 10
 
     - name: Create NFS share directory
       ansible.builtin.file:
@@ -82,6 +104,103 @@
         owner: nobody
         group: nobody
         mode: "2770"
+    
+    - name: Add cluster nodes to /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: "{{ item }}"
+        state: present
+        create: yes
+      loop:
+        - "{{ nfs0_ip }} nfs-00"
+        - "{{ nfs1_ip }} nfs-01"
+
+    - name: Create DRBD resource nfs_data config file 
+      copy:
+        dest: /etc/drbd.d/nfs.res
+        content: |
+          resource nfs_data {
+              protocol C;
+              disk   /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_drive-scsi1;  
+              device /dev/drbd0;
+              meta-disk internal;
+
+              on okd4-nfs-00 {
+                  node-id 0;
+                  address   {{ nfs0_ip }}:7789;
+              }
+
+              on okd4-nfs-01 { 
+                  node-id 1;
+                  address   {{ nfs1_ip }}:7789;
+              }
+          }
+
+    - name: Backup global_common conf 
+      become: yes
+      become_user: "root"
+      shell: |
+        cp /etc/drbd.d/global_common.conf /etc/drbd.d/global_common.conf.backup0
+
+    - name: Create DRBD resource global common config file
+      copy:
+        dest: /etc/drbd.d/global_common.conf
+        content: |
+          global {
+            usage-count no;
+            udev-always-use-vnr;
+          }
+          common {
+            protocol C;
+            handlers {
+            }
+            startup {
+            }
+            disk {
+            }
+            net {
+            }
+            syncer {
+            }
+          }
+
+    - name: Create Corosync config file
+      copy:
+        dest: /etc/corosync/corosync.conf
+        content: |
+          # Please read the corosync.conf.5 manual page
+          totem {
+            version: 2
+            cluster_name: nfscluster
+            crypto_cipher: none
+            crypto_hash: none
+          }
+          logging {
+            fileline: off
+            to_stderr: yes
+            to_logfile: yes
+            logfile: /var/log/cluster/corosync.log
+            to_syslog: yes
+            debug: off
+            logger_subsys {
+              subsys: QUORUM
+              debug: off
+            }
+          }
+          quorum {
+          }
+          nodelist {
+            node {
+              name: nfs-00
+              nodeid: 1
+              ring0_addr: {{ nfs0_ip }}
+            }
+            node {
+              name: nfs-01
+              nodeid: 2
+              ring0_addr: {{ nfs1_ip }}
+            }
+          }
 
     - name: Generate NFS exports file
       ansible.builtin.lineinfile:
@@ -92,7 +211,106 @@
         regexp: "^{{ nfs_path }}\\s+{{ item }}/{{ network_mask }}"
       loop: "{{ [api_ip] + primary_ips + compute_ips }}"
 
-    - name: Restart NFS service to apply changes
+    - name: Ensure NFS server service is started and enabled
+      ansible.builtin.service:
+        name: nfs-server
+        state: started
+        enabled: yes
+        
+    - name: Reboot after installing drbd to load module
+      shell: sudo reboot
+      become: yes
+      become_user: "{{ ansible_user }}"
+      async: 1
+      poll: 0
+
+    - name: Wait for the system to come back online
+      wait_for_connection:
+        timeout: 300
+        delay: 60
+
+    - name: Restart NFS service
       ansible.builtin.service:
         name: nfs-server
         state: restarted
+
+    - name: Load drbd module 
+      become: yes
+      become_user: "{{ ansible_user }}"
+      shell: |
+        set -e
+        sudo modprobe drbd
+        echo drbd | sudo tee /etc/modules-load.d/drbd.conf
+
+    - name: Setup HA services
+      become: yes
+      become_user: "{{ ansible_user }}"
+      shell: |
+        set -e
+        sudo drbdadm --force create-md nfs_data
+        sudo drbdadm up nfs_data
+        sudo systemctl enable corosync
+        sudo systemctl enable pacemaker
+        sudo systemctl enable pcsd
+        sudo systemctl start corosync
+        sudo systemctl start pacemaker
+        sudo systemctl start pcsd
+        echo "hacluster:{{ hacluster_pass }}" | sudo chpasswd
+        sudo ln -s /usr/sbin/drbdsetup /usr/bin/drbdsetup
+
+    - name: Configure SELinux
+      become: yes
+      become_user: "root"
+      shell: |
+        set -e
+        semanage permissive -a drbd_t || true
+        ausearch -c 'drbdsetup' --raw | audit2allow -M my-drbdsetup || true
+        if [ -f my-drbdsetup.pp ]; then
+          semodule -X 300 -i my-drbdsetup.pp
+        else
+          echo "No policy generated; setting SELinux to permissive mode"
+          setenforce 0
+        fi
+        semanage fcontext -a -t nfs_t /data/nfs || true
+
+    - name: Configure cluster as primary node
+      become: yes
+      become_user: "{{ ansible_user }}"
+      # Force cluster setup, becouse on another/secondary host services will be in running state
+      shell: |
+        set -e
+        echo "Waiting for secondary host"
+        sleep 40 # wait for secondary host to finish
+        sudo drbdadm -- --force --overwrite-data-of-peer primary nfs_data
+        sudo mkfs.ext4 /dev/drbd0
+        sudo mount /dev/drbd0 {{ nfs_path }}
+        sudo pcs cluster auth -u hacluster -p {{ hacluster_pass }}
+        sudo pcs cluster setup --start --force nfscluster nfs-00 nfs-01 
+        sudo pcs cluster start --all
+        sudo pcs cluster enable --all
+        sudo pcs property set stonith-enabled=false
+        sudo pcs property set no-quorum-policy=ignore
+
+        sudo pcs cluster cib nfs-cluster-config
+
+        sudo pcs -f nfs-cluster-config resource create drbd_nfs_data ocf:linbit:drbd \
+          drbd_resource=nfs_data \
+          op monitor interval=20s role=Unpromoted \
+          op monitor interval=10s role=Promoted \
+          meta notify=true \
+          master-max=1 master-node-max=1 clone-max=2 clone-node-max=1 
+        sudo pcs -f nfs-cluster-config resource promotable drbd_nfs_data meta notify=true \
+          promoted-max=1 promoted-node-max=1 \
+          clone-max=2 clone-node-max=1
+        sudo pcs -f nfs-cluster-config resource create fs_nfs_data Filesystem device="/dev/drbd0" directory="{{ nfs_path }}" fstype="ext4"
+        sudo pcs -f nfs-cluster-config constraint colocation add fs_nfs_data with drbd_nfs_data-clone INFINITY with-rsc-role=Master
+        sudo pcs -f nfs-cluster-config constraint order promote drbd_nfs_data-clone then start fs_nfs_data
+        sudo pcs -f nfs-cluster-config resource create nfs-server systemd:nfs-server 
+        sudo pcs -f nfs-cluster-config constraint colocation add nfs-server with fs_nfs_data INFINITY
+        sudo pcs -f nfs-cluster-config constraint order start fs_nfs_data then start nfs-server
+        sudo pcs -f nfs-cluster-config resource create nfs_cluster_vip ocf:heartbeat:IPaddr2 ip={{ nfs_vip }}  cidr_netmask=16
+        sudo pcs -f nfs-cluster-config constraint colocation add nfs_cluster_vip with nfs-server INFINITY
+        sudo pcs -f nfs-cluster-config constraint order start nfs-server then start nfs_cluster_vip
+
+        sudo pcs cluster cib-push nfs-cluster-config
+      when: primary_nfs

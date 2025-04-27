@@ -1,6 +1,11 @@
-- Include base image templates creation from https://gitlab.hjhp.io/hjhp/Proxmox-VM-Templates-IaC/-/blob/main/infrastructure/terraform/main.tf.
-- Add potential integration with automated storage management systems, such as [Rook](https://rook.io/) (Ceph), [Longhorn](longhorn.io), or a custom replicated NFS solution.
-- Remove all hardcoded values. Currently identified: storage name "big-data" and domain name (OKD_DOMAIN = "hjhp.io").
-- Replace the use of the root password with an API token for Proxmox after the FCOS update. This avoids using the KVM arguments field, which requires root access (refer to (repo-root)/infrastructure/terraform/providers.tf - https://github.com/coreos/fedora-coreos-docs/commit/69eecc4275f1ce04fd11c46b058a03095cb911fc).
-- Integrate with Confizard for simplified setup and configuration management.
-- Debug long waiting (+1.5h) for bootstrap to finish while OKD cluster is updating - is there need of manual CSR approval?
+# Planned:
+-
+
+# Currently not planned unless requested during project discussions:
+1. Publish Verified Integration with a CephFS Cluster via Rook.io  
+   Provide an alternative to the current high-availability NFS setup using Rook.io (Ceph), which offers greater scalability, resilience, and automated storage management.
+
+2. Implement a Split-Brain Resolution Mechanism  
+   Mitigate potential split-brain conditions in the existing high-availability architecture by incorporating appropriate quorum or conflict resolution strategies.
+
+3. Finish implementation of building latest CoreOS images using administrator node.

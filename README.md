@@ -1,46 +1,67 @@
-Parent project: [OwnLab](https://github.com/orgs/HJHPio/projects/2)  
-![OwnLabLogo](./IMGs/OwnLab/OwnLab-Logo-1_V2024.11.28.png)
 # OKD Proxmox IaC
-This repository provisions a complete OKD cluster deployed on a Proxmox instance. Currently, it supports a single Proxmox node, but future updates will expand support for multi-node setups. Manually, it's already possible to copy VM resources and update the node name.
+This repository demonstrates how to provision a complete OKD cluster on a Proxmox instance using Infrastructure as Code (IaC).  
+It supports deployment on a single Proxmox instance, with components configured for High Availability setups.  
+Although full multi-node automation is not included, users can manually replicate virtual machine code declarations and configure node names to distribute workloads across multiple Proxmox instances if required.  
+
+Parent project: [OwnLab](https://github.com/orgs/HJHPio/projects/2)    
+![OwnLabLogo](./IMGs/OwnLab/OwnLab-Logo-1_V2024.11.28.png)  
+
+# Gallery 
+![VirtualMachinesDiagram](./IMGs/docs/OKD_PROXMOX_IAC_VMS.drawio.svg)
+
+## Configuration
+This project was tested on Proxmox Virtual Environment (Proxmox VE) version 8.1.4. Running it requires additional tools such as Docker, Git, Ansible, and Tofu — or only Git and Docker if using Confizard through the Quick Setup method.  
+Supported configuration variables are documented in the following file: [variables.tf](./infrastructure/terraform/variables.tf)
 
 ## Quick Setup Guide
-<!-- TODO: Update with Confizard integration and utility container for Terraform automation -->
-1. Navigate to the Terraform directory: 
+### Confizard (Recommended)
+Visit the official [Confizard](https://confizard.hjhp.io/?extConfUrl=https://confizard-assets.pages.dev/okd-proxmox-iac) portal to generate an automated deployment script.
+(The link is preconfigured with the steps corresponding to this repository, hosted at https://confizard-assets.pages.dev/okd-proxmox-iac. )
+### Manual Deployment Instructions
+1. **Navigate to the *terraform* directory** 
 ```sh
 cd infrastructure/terraform
 ```
-2. Create a terraform.tfvars file from the example and populate the required variables:
+2. **Create a *terraform.tfvars* file from the example and populate the required variables**
 ```sh
 cp terraform.tfvars.example terraform.tfvars && vi terraform.tfvars
 ```
-3. Review the Terraform module for any specific infrastructure customizations:
-Check the module located at (repo-root)/infrastructure/terraform/modules/proxmox/main.tf.
-Ensure the following line is present in terraform.tfvars:
+3. **Review the terraform modules for any necessary infrastructure customizations**
+Check the modules located at: 
 ```
-bootstrap_node_state    = "running"
+(repo-root)/infrastructure/terraform/modules/*.
 ```
-4. Generate and place an SSH key pair:
-- Generate an SSH key pair for logging into OKD nodes without a password.
-- Place the keys in the following directory:
+4. **Generate and place an SSH key pair**
+- Generate an SSH key pair for passwordless login to the OKD nodes.
+- Place the generated keys in the following directory:
 ```
 (repo-root)/infrastructure/terraform/ansible/files/secrets/
 ```
-- Use these file names for the keys:
-  - Private key: ssh-priv-key.key
-  - Public key: ssh-pub-keys.key
-5. Add a DNS entry to the Proxmox instance router:
-- Add the following record to your router's DNS settings:
-  - Host Name: api-int.ownlab-okd4.hjhp.io
-  - IP Address: 192.168.1.241
-6. Initialize and set up the infrastructure:
+- **Use the following filenames for the keys:**
+  - **Private** key: *ssh-priv-key.key*
+  - **Public** key: *ssh-pub-keys.key*
+5. **Initialize and apply the infrastructure**
 ```sh
 tofu init
 tofu plan -out=init.tfplan
 tofu apply "init.tfplan"
 ```
 
-## Roadmap
-[ROADMAP.md](./ROADMAP.md) file includes upcoming features and future plans.
+## External connection to cluster
+[connection/README.md](./infrastructure/terraform/modules/connection/README.md) file describes options for external connection to deployed OKD cluster.
+
+## Before Proceeding to Production with This Example
+1. **Distribute Infrastructure Across Proxmox Nodes**  
+Upgrade the infrastructure by allocating components across multiple Proxmox nodes to ensure failover redundancy and improve overall system resilience.
+2. **Secure Cluster Access**  
+Configure firewall rules to block non-essential traffic and evaluate secure external access options such as VPN connections or SSH tunnels to safeguard cluster communications.
+3. **Mitigate Split-Brain Scenarios**  
+Implement a solution to address potential "split-brain" conditions in the high-availability setup. Options include deploying a lightweight virtual machine to act as a quorum-only third node in a Pacemaker cluster, or integrating a control node capable of shutting down a backup router if both routers simultaneously operate as primaries.
+4. **Update Credentials**
+Ensure that all passwords defined in the deployment variables, as well as those configured in the OPNsense router, are properly updated. **Do not use default credentials.**
+5. (Optional) **Consider CephFS as a Storage Backend**  
+Assess the project’s storage requirements to determine whether replacing the current NFS configuration with a [CephFS cluster—deployed via Rook.io Helm charts](https://rook.io/docs/rook/v1.17/Getting-Started/ceph-openshift/) would enhance high-availability and stability. A basic CephFS setup has been tested and confirmed to function correctly.
+If desired, users may request that the Ceph configuration option be published by opening an issue in this project repository.
 
 ## Changelog
 [CHANGELOG.md](./CHANGELOG.md) file includes project changes in each release.
@@ -70,6 +91,8 @@ Automatically detected dependencies and their acknowledgments are listed in the 
 Everyone is welcome to fork and use it for private and commercial purposes.  
 Full license can be found in [LICENSE](./LICENSE) file.  
 
-## Project status
-The project is in its initial state.  
-The scope and targets may change after discussions in issues.
+## Project Status and Roadmap
+The project is currently considered complete.  
+Previous roadmap ideas have been retained as examples for potential individual extensions, and are documented in the [ROADMAP.md](./ROADMAP.md) file.
+
+New feature requests can be submitted through discussions on any of the project's hosted mirrors.
