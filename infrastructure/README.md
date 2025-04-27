@@ -1,5 +1,4 @@
 Usefull resources:  
-<!-- # TODO: "embed NetworkManager keyfiles directly in a live ISO" - embed network configuration to remove the need of kvm args -->
 - https://github.com/coreos/fedora-coreos-docs/commit/69eecc4275f1ce04fd11c46b058a03095cb911fc
 - https://github.com/okd-project/okd/blob/master/FAQ.md#which-fedora-coreos-should-i-use
 - https://docs.fedoraproject.org/en-US/fedora-coreos/sysconfig-network-configuration/
