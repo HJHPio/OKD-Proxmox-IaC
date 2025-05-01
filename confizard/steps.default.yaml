@@ -1,0 +1,89 @@
+- id: 0
+  title: Start
+  description: |
+    Welcome to the Confizard setup process.
+    Follow the steps to configure your environment for provisioning OKD 4.x cluster on Proxmox via Infrastructure as Code (IaC).
+    Prerequisites: Git and Docker. Execute the script on a Linux system or within a WSL environment.
+  icon: BookOpenIcon
+  fields: []
+  script: |
+    echo 'Welcome to Confizard!'
+
+- id: 1
+  title: Proxmox Settings
+  description: Provide connection details and general Proxmox parameters.
+  icon: CircleStackIcon
+  fields:
+    - name: PROXMOX_DOMAIN
+      label: Proxmox Domain
+      type: text
+      description: Enter the domain name of your Proxmox server (e.g., proxmox-1.example.com), which must be accessible over HTTPS on port 443.
+      obligatory: true
+    - name: PROXMOX_USER
+      label: Proxmox Username
+      type: text
+      default: root@pam
+      description: Enter the username used to access Proxmox via api.
+      obligatory: true
+    - name: PROXMOX_PASSWORD
+      label: Proxmox Password
+      type: password
+      description: Enter the password associated with your Proxmox account for api access.
+      obligatory: true
+      sensitive: true
+    - name: PROXMOX_SSH_DOMAIN
+      label: Proxmox SSH Domain
+      type: text
+      description: Enter the domain name of your Proxmox server (e.g., proxmox-1.ssh.example.com), which must be accessible over SSH on port 22.
+      obligatory: true
+    - name: PROXMOX_SSH_USER
+      label: Proxmox SSH Username
+      type: text
+      default: root
+      description: Enter the username used to access Proxmox via SSH protocol.
+      obligatory: true
+    - name: PROXMOX_SSH_PASSWORD
+      label: Proxmox Password
+      type: password
+      description: Enter the password associated with your Proxmox account for SSH.
+      obligatory: true
+      sensitive: true
+
+- id: 2
+  title: Script Description
+  description: |
+    The script clones the repository from https://gitlab.com/HJHPio/OKD-Proxmox-IaC.git, 
+    builds a Docker container image, and provisions the OKD cluster infrastructure on Proxmox 
+    using the resulting container and Tofu (an open-source alternative to Terraform).
+  icon: CheckIcon
+  fields: []
+  script: |
+    set -e
+    # 1. Clone the repository
+    git clone https://gitlab.com/HJHPio/OKD-Proxmox-IaC.git
+    cd OKD-Proxmox-IaC
+
+    # 2. Build the Docker image
+    cd confizard
+    docker build -t proxmox-okd-deployer .
+
+    cd ..
+    # 3. Run the container with repo mounted
+    docker run --rm -it \
+      -v "$(pwd)":/runtime \
+      -e GENERATE_KEYS="${GENERATE_KEYS:-true}" \
+      -e TF_VAR_pm_url="https://${PROXMOX_DOMAIN}/api2/json" \
+      -e TF_VAR_pm_bpg_url="https://${PROXMOX_DOMAIN}" \
+      -e TF_VAR_pm_user="${PROXMOX_USER}" \
+      -e TF_VAR_pm_password="${PROXMOX_PASSWORD}" \
+      -e TF_VAR_pm_ssh_url="${PROXMOX_SSH_DOMAIN}" \
+      -e TF_VAR_pm_ssh_user="${PROXMOX_SSH_USER}" \
+      -e TF_VAR_pm_ssh_password="${PROXMOX_SSH_PASSWORD}" \
+      proxmox-okd-deployer
+
+- id: 5
+  title: Automated Script
+  description: Review your settings and complete the configuration.
+  icon: CheckIcon
+  fields: []
+  script: echo 'Confizard setup script completed successfully.'

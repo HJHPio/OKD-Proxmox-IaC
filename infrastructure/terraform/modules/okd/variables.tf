@@ -1,7 +1,6 @@
 variable "pm_tls_skip_verify" {
   description = "Skip TLS verification for Proxmox API"
   type        = bool
-  default     = true
 }
 
 variable "pm_url" {
@@ -23,49 +22,36 @@ variable "pm_api_token_secret" {
 variable "okd_version" {
   description = "The version of OKD to install"
   type        = string
-  default     = "2.36.0"
 }
 
 variable "custom_dns" {
   description = "Your custom dns IP address"
   type        = string
-  default     = ""
-}
-
-variable "okd_net_manager_ip_suffix" {
-  description = "The suffix for the IP address in your internal network for manager node (last octet)"
-  type        = string
-  default     = "241"
 }
 
 variable "okd_net_bootstrap_ip_suffix" {
   description = "The suffix for the IP address in your internal network for bootstrap node (last octet)"
   type        = string
-  default     = "242"
 }
 
 variable "okd_net_ip_addresses_prefix" {
   description = "The prefix for the IP addresses in your internal network (first 3 octets)"
   type        = string
-  default     = "192.168.1"
 }
 
 variable "okd_net_gateway" {
   description = "The gateway IP address for your internal OKD network"
   type        = string
-  default     = "192.168.1.1"
 }
 
 variable "okd_net_mask" {
   description = "The subnet mask for your internal network (in CIDR notation)"
   type        = string
-  default     = "24"
 }
 
 variable "manager_user" {
   description = "Username for manager node"
   type        = string
-  default     = "okduser"
 }
 
 variable "manager_pass" {
@@ -76,50 +62,41 @@ variable "manager_pass" {
 variable "primary_count" {
   description = "Number of primary VMs to create"
   type        = number
-  default     = 3  
 }
 
 variable "compute_count" {
   description = "Number of compute VMs to create"
   type        = number
-  default     = 3  
 }
 
 variable "ssh_admin_pass_hash" {
   description = "Hash of admin password"
   type        = string
-  # default to password "fedora"
-  default     = "$6$kJ6aAOxhrAPCSVXF$.UkFx4VQst2Sm7aZnY0PO1a0Y4kp1OLYCEiykvVUwUaIgGF.2xcMYfCixZ6pzKapEu522.v8JoLAQKCrWc6Hq1"
 }
 
 variable "okd_fcos_version" {
   description = "Version of fcos to wait for rebase"
   type        = string
-  default     = "39.20240210.3.0"
 }
 
 variable "okd_fcos_digest" {
   description = "Digest of fcos version"
   type        = string
-  default     = "ostree-unverified-registry:quay.io/openshift/okd-content@sha256:eb85d903c52970e2d6823d92c880b20609d8e8e0dbc5ad27e16681ff444c8c83"
 }
 
 variable "compute_initial_ip_suffix" {
   type        = number
   description = "Initial IP suffix for compute nodes"
-  default     = 220
 }
 
 variable "primary_initial_ip_suffix" {
   type        = number
   description = "Initial IP suffix for primary nodes"
-  default     = 230
 }
 
 variable "bootstrap_node_state" {
   type        = string
   description = "Bootstrap vm node state"
-  default     = "running"
 }
 
 variable "primary_ips_str" {
@@ -135,23 +112,152 @@ variable "compute_ips_str" {
 variable "configure_nfs_provider" {
   description = "Configure NFS provider helm in OKD"
   type        = bool
-  default     = true
 }
 
 variable "okd_net_nfs_ip_suffix" {
   description = "The suffix for the IP address in your internal network for nfs vm (last octet)"
   type        = string
-  default     = "243"
 }
 
 variable "nfs_provider_version" {
   description = "Version of used NFS provider"
   type        = string
-  default     = "4.0.18"
 }
 
 variable "nfs_path" {
   description = "Path to NFS export dir"
   type        = string
-  default     = "/data/nfs"
 }
+
+#################################################
+#           Proxmox SSH Connection              #
+#################################################
+variable "pm_ssh_url" {
+  description = "The Proxmox host IP address"
+  type        = string
+}
+
+variable "pm_ssh_user" {
+  description = "The user to SSH into Proxmox"
+  type        = string
+}
+
+variable "pm_ssh_password" {
+  description = "The password for SSH user"
+  type        = string
+  sensitive   = true
+}
+#################################################
+
+#################################################
+#             Common                            #
+#################################################
+variable "okd_net_ip_main_prefix" {
+  description = "The prefix for the IP addresses in your internal network (first 2 octets)"
+  type        = string
+}
+
+variable "okd_default_node_disk_size" {
+  description = "Default size of okd node disk"
+  type        = string
+}
+
+variable "okd_cluster_subdomain" {
+  description = "Subdomain for OKD cluster"
+  type        = string
+}
+
+variable "okd_cluster_domain" {
+  description = "Domain for OKD cluster"
+  type        = string
+}
+
+variable "okd_cluster_prefix" {
+  description = "Prefox for OKD cluster"
+  type        = string
+}
+
+variable "pacemaker_cluster_pass" {
+  description = "Password for pacemaker cluster configs"
+  type        = string
+}
+#################################################
+
+#################################################
+#             Load Balancers                    #
+#################################################
+variable "okd_net_ip_lb_infix" {
+  description = "The infix for the IP addresses (for lb) in your internal network (inner 1 octet)"
+  type        = string
+}
+variable "okd_net_ip_lb_vip_suffix" {
+  description = "The suffix for the VIP address (for lb) in your internal network (last octet)"
+  type        = string
+}
+variable "okd_net_ip_lb_00ip_suffix" {
+  description = "The suffix for the 00IP address (for lb) in your internal network (last octet)"
+  type        = string
+}
+variable "okd_net_ip_lb_01ip_suffix" {
+  description = "The suffix for the 01IP address (for lb) in your internal network (last octet)"
+  type        = string
+}
+
+# Generated in runtime 
+variable "lb_vip" {
+  type        = string
+}
+variable "lb00_ip" {
+  type        = string
+}
+variable "lb01_ip" {
+  type        = string
+}
+variable "lb00_ipconfig" {
+  type        = string
+}
+variable "lb01_ipconfig" {
+  type        = string
+}
+
+variable "vm_storage_name" {
+  description = "The name of the storage where the VM disks will be stored"
+  type        = string
+}
+
+variable "proxmox_node_name" {
+  description = "The name of the node where the VM will be deployed"
+  type        = string
+}
+
+variable "okd_internal_bridge" {
+  description = "The name of proxmox bridge used for internal communication"
+  type        = string
+}
+#################################################
+
+#################################################
+#               CentOS VM                       #
+#################################################
+variable "centos_template_name" {
+  description = "The CentOS VM template name"
+  type        = string
+}
+variable "centos_template_id" {
+  description = "The CentOS VM template ID"
+  type        = string
+}
+#################################################
+
+#################################################
+#                 SCOS VM                       #
+#################################################
+variable "scos_template_id" {
+  description = "The SCOS VM template ID"
+  type        = string
+}
+variable "scos_template_name" {
+  description = "The SCOS VM template name"
+  type        = string
+}
+#################################################

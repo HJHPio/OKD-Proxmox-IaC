@@ -1,19 +1,19 @@
 
 data "ct_config" "bootstrap_customized_ignition" {
-  strict  = true
-  count   = 1
-  content = templatefile("${path.module}/../../ansible/files/configs/vm_customized_ignition.yaml.tftpl", {
-    merge_ignition_source = "http://${var.okd_net_ip_addresses_prefix}.${var.okd_net_manager_ip_suffix}:8080/okd4/bootstrap.ign"
+  strict                  = true
+  count                   = 1
+  content                 = templatefile("${path.module}/../../ansible/files/configs/vm_customized_ignition.yaml.tftpl", {
+    merge_ignition_source = "http://${var.lb_vip}:8080/${var.okd_cluster_prefix}/bootstrap.ign"
     ssh_admin_username    = "core"
     ssh_admin_pass_hash   = "${var.ssh_admin_pass_hash}"
     ssh_admin_public_key  = file("${path.module}/../../ansible/files/secrets/ssh-pub-keys.key")
     hostname              = format("okd4-bootstrap-%02d", count.index)
-    cluster_domain_name   = "ownlab-okd4.hjhp.io"
+    cluster_domain_name   = "${var.okd_cluster_subdomain}.${var.okd_cluster_domain}"
     network_iname         = "ens18"
     network_address       = "${var.okd_net_ip_addresses_prefix}.${var.okd_net_bootstrap_ip_suffix}/${var.okd_net_mask}"
     network_ip            = "${var.okd_net_ip_addresses_prefix}.${var.okd_net_bootstrap_ip_suffix}"
     network_gateway       = "${var.okd_net_gateway}"
-    network_dns           = ["${var.okd_net_ip_addresses_prefix}.${var.okd_net_manager_ip_suffix}"]
+    network_dns           = ["${var.lb_vip}"]
     network_mask          = "${var.okd_net_mask}"
     inactive_version      = "${var.okd_fcos_version}"
     inactive_digest       = "${var.okd_fcos_digest}"
@@ -21,18 +21,20 @@ data "ct_config" "bootstrap_customized_ignition" {
 }
 
 resource "proxmox_vm_qemu" "cloudinit-okd-bootstrap" {
-  depends_on  =  [proxmox_vm_qemu.cloudinit-okd-manager]
+  depends_on  =  [
+    proxmox_vm_qemu.cloudinit-okd-manager,
+  ]
 
-  target_node = "pve"
+  target_node = var.proxmox_node_name
   count       = 1
-  clone       = "FCOS-39-Clean-QCOW2"
+  clone       = "${var.scos_template_name}"
   name        = format("okd4-bootstrap-%02d", count.index)
-  desc        = "Cloudinit OKD Bootstrap FCOS using FCOS-39-Clean-QCOW2 qcow2 format image"
-  vmid        = tonumber(var.okd_net_bootstrap_ip_suffix) + count.index
+  desc        = "Cloudinit OKD Bootstrap"
+  vmid        = tonumber(var.scos_template_id) + tonumber(var.okd_net_bootstrap_ip_suffix) + count.index
 
   memory      = 1024 * 14
-  cores       = 2
-  sockets     = 2
+  cores       = 4
+  sockets     = 1
   vcpus       = 0
   cpu         = "host"
   numa        = true
@@ -46,9 +48,8 @@ resource "proxmox_vm_qemu" "cloudinit-okd-bootstrap" {
   bios        = "seabios"
   vm_state    = "${var.bootstrap_node_state}"
 
-  nameserver  = "${var.okd_net_ip_addresses_prefix}.${var.okd_net_manager_ip_suffix}"
   network {
-     bridge    = "vmbr0"
+     bridge    = var.okd_internal_bridge
      firewall  = false
      link_down = false
      model     = "virtio" 
@@ -66,8 +67,8 @@ resource "proxmox_vm_qemu" "cloudinit-okd-bootstrap" {
       scsi0 {
         disk {
           emulatessd  = true
-          storage     = "big-data"
-          size        = 50
+          storage     = var.vm_storage_name
+          size        = var.okd_default_node_disk_size
         }
       }
     }

@@ -1,0 +1,166 @@
+---
+- name: Configure OKD CoreOS ISO Builder
+  hosts: all
+  become: yes
+  vars:
+    ansible_user:         "{{ lookup('env', 'ANSIBLE_USER') }}"
+    build_dir:            "/home/centosuser/scos-okd-4.19"
+    cosa_variant:         c9s
+    os_repo:              https://github.com/openshift/os.git
+    cosa_branch:          release-4.19
+  tasks:
+
+    - name: Install all required packages
+      block:
+        - name: Clean DNF cache
+          ansible.builtin.dnf:
+            name: '*'
+            state: latest
+            update_cache: yes
+
+        - name: Install required packages
+          ansible.builtin.dnf:
+            name:
+              - qemu-guest-agent
+              - podman
+              - git
+              - nginx
+            state: present
+          register: install_results
+          until: install_results is succeeded
+          retries: 3
+          delay: 10
+      
+      rescue:
+        - name: Debug package installation failure
+          debug:
+            msg: "Failed to install required packages"
+
+        - name: Try to install packages again
+          ansible.builtin.dnf:
+            name:
+              - qemu-guest-agent
+              - podman
+              - git
+              - nginx
+            state: present
+          register: retry_results
+          until: retry_results is succeeded
+          retries: 3
+          delay: 10
+
+    - name: Create build directory
+      file:
+        path: "{{ build_dir }}"
+        state: directory
+
+    - name: Create nginx directory
+      file:
+        path: "/var/www/html"
+        state: directory
+
+    - name: Configure Nginx to serve the QCOW2 image directory
+      copy:
+        content: |
+          server {
+            listen 80;
+            server_name _;
+            root "/var/www/html";
+            autoindex on;
+            index index.html;
+          }
+        dest: /etc/nginx/conf.d/qcow2.conf
+        mode: '0644'
+      notify: reload nginx
+
+    - name: Ensure Nginx is running and enabled
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+    # - name: Add full cosa() function to .bashrc
+    #   ansible.builtin.blockinfile:
+    #     path: /home/{{ ansible_user }}/.bashrc
+    #     marker: "# {mark} ANSIBLE COSA FUNCTION"
+    #     block: |
+    #       {% raw %}
+    #       cosa() {
+    #         env | grep COREOS_ASSEMBLER
+    #         local -r COREOS_ASSEMBLER_CONTAINER_LATEST="quay.io/coreos-assembler/coreos-assembler:latest"
+    #         if [[ -z ${COREOS_ASSEMBLER_CONTAINER} ]] && $(podman image exists ${COREOS_ASSEMBLER_CONTAINER_LATEST}); then
+    #             local -r cosa_build_date_str="$(podman inspect -f "{{.Created}}" ${COREOS_ASSEMBLER_CONTAINER_LATEST} | awk '{print $1}')"
+    #             local -r cosa_build_date="$(date -d ${cosa_build_date_str} +%s)"
+    #             if [[ $(date +%s) -ge $((cosa_build_date + 60*60*24*7)) ]] ; then
+    #               echo -e "\e[0;33m----" >&2
+    #               echo "The COSA container image is more that a week old and likely outdated." >&2
+    #               echo "You should pull the latest version with:" >&2
+    #               echo "podman pull ${COREOS_ASSEMBLER_CONTAINER_LATEST}" >&2
+    #               echo -e "----\e[0m" >&2
+    #               sleep 10
+    #             fi
+    #         fi
+    #         set -x
+    #         podman run --rm -ti --security-opt=label=disable --privileged                                    \
+    #                   --uidmap=1000:0:1 --uidmap=0:1:1000 --uidmap=1001:1001:64536                          \
+    #                   -v=${PWD}:/srv/ --device=/dev/kvm --device=/dev/fuse                                  \
+    #                   --tmpfs=/tmp -v=/var/tmp:/var/tmp --name=cosa                                         \
+    #                   ${COREOS_ASSEMBLER_CONFIG_GIT:+-v=$COREOS_ASSEMBLER_CONFIG_GIT:/srv/src/config/:ro}   \
+    #                   ${COREOS_ASSEMBLER_GIT:+-v=$COREOS_ASSEMBLER_GIT/src/:/usr/lib/coreos-assembler/:ro}  \
+    #                   ${COREOS_ASSEMBLER_ADD_CERTS:+-v=/etc/pki/ca-trust:/etc/pki/ca-trust:ro}              \
+    #                   ${COREOS_ASSEMBLER_CONTAINER_RUNTIME_ARGS}                                            \
+    #                   ${COREOS_ASSEMBLER_CONTAINER:-$COREOS_ASSEMBLER_CONTAINER_LATEST} "$@"
+    #         rc=$?; set +x; return $rc
+    #       }
+    #       {% endraw %}
+    #   become_user: "{{ ansible_user }}"
+
+    # # Source for building SCOS
+    # # https://coreos.github.io/coreos-assembler/working/#im-a-contributor-investigating-a-coreos-bug-how-can-i-test-my-fixes
+    # - name: Initialize cosa environment
+    #   shell: "source /home/{{ ansible_user }}/.bashrc && cosa init --variant {{ cosa_variant }} {{ os_repo }} --force --branch {{ cosa_branch }}"
+    #   args:
+    #     chdir: "{{ build_dir }}"
+
+    # - name: Fetch and build image
+    #   shell: "source /home/{{ ansible_user }}/.bashrc && cosa fetch && cosa build"
+    #   args:
+    #     chdir: "{{ build_dir }}"
+
+    # - name: Build extended images (metal and live)
+    #   shell: "source /home/{{ ansible_user }}/.bashrc && cosa buildextend-metal && cosa buildextend-live --fast"
+    #   args:
+    #     chdir: "{{ build_dir }}"
+
+    # - name: Synchronize qcow2 images
+    #   synchronize:
+    #     src: "{{ build_dir }}/builds"
+    #     dest: "/var/www/html"
+
+    # - name: Update permissions for images
+    #   shell: "chcon -R -t httpd_sys_content_t /var/www/html"      
+        
+    - name: Install GNOME GUI group
+      ansible.builtin.dnf:
+        name: "@Server with GUI"
+        state: present
+
+    - name: Set default target to graphical
+      ansible.builtin.command: systemctl set-default graphical
+      changed_when: false
+
+    - name: Enable GDM (GNOME Display Manager)
+      ansible.builtin.service:
+        name: gdm
+        enabled: yes
+        state: started
+
+    - name: Reboot to enter GUI
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+
+  handlers:
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded
