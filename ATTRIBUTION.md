@@ -1,8 +1,36 @@
 # Attribution
 
-This project uses the following tools and technologies:
+This project leverages the following packages, tools and technologies:
 
-- [GitLab CE - MIT](https://gitlab.com/gitlab-org/gitlab)
+- [Git](https://git-scm.com/)
+- [GitLab CE](https://gitlab.com/gitlab-org/gitlab)
 - [OpenToFu](https://opentofu.org/)
+- [Terraform](https://developer.hashicorp.com/terraform)
 - [Proxmox](https://www.proxmox.com/en/)
+- [Confizard](https://gitlab.com/HJHPio/Confizard)
+- [Docker](https://docs.docker.com/)
+- [Ansible](https://docs.ansible.com/)
+- [OPNsense](https://opnsense.org/)
+- [Helm](https://helm.sh/)
 - [OKD](https://okd.io/)
+- [Fedora CoreOS](https://fedoraproject.org/coreos/)
+- [CentOS CoreOS](https://www.centos.org/cloud/)
+- [CentOS Stream GenericCloud](https://cloud.centos.org/altarch/9-stream/x86_64/images/)
+- [Pacemaker](https://clusterlabs.org/projects/pacemaker/)
+- [Corosync](https://corosync.github.io/corosync/)
+- [DRBD](https://linbit.com/drbd/)
+- [NGINX](https://nginx.org/)
+- [HAProxy](https://www.haproxy.org/)
+- [Apache httpd](https://httpd.apache.org/)
+- [Podman](https://podman.io/)
+- [qm - QEMU/KVM Virtual Machine Manager](https://pve.proxmox.com/pve-docs/qm.1.html)
+- [qemu-guest-agent](https://pve.proxmox.com/wiki/Qemu-guest-agent)
+- [nfs-utils](https://pkgs.org/download/nfs-utils)
+- [Pacemaker/Corosync Configuration System](https://pkgs.org/search/?q=pcs)
+- [fence-agents](https://github.com/ClusterLabs/fence-agents/)
+- [Terraform Provider: null](https://registry.terraform.io/providers/hashicorp/null/latest/docs)
+- [Terraform Provider: Telmate/proxmox](https://registry.terraform.io/providers/Telmate/proxmox/latest)
+- [Terraform Provider: bpg/proxmox ](https://registry.terraform.io/providers/bpg/proxmox/latest)
+- [Terraform Provider: poseidon/ct](https://registry.terraform.io/providers/poseidon/ct/latest)
+
+For any attribution-related inquiries or issues, please contact us via email at [support@hjhp.io](mailto:support@hjhp.io).
